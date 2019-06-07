@@ -1,0 +1,4219 @@
+diff -rupN linux-4.14.0/drivers/mtd/Kconfig linux-4.14.0-cy-snor/drivers/mtd/Kconfig
+--- linux-4.14.0/drivers/mtd/Kconfig	2017-11-12 19:46:13.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/mtd/Kconfig	2018-05-02 17:45:43.677142652 +0200
+@@ -340,6 +340,8 @@ source "drivers/mtd/lpddr/Kconfig"
+ 
+ source "drivers/mtd/spi-nor/Kconfig"
+ 
++source "drivers/mtd/cy-snor/Kconfig"
++
+ source "drivers/mtd/ubi/Kconfig"
+ 
+ endif # MTD
+diff -rupN linux-4.14.0/drivers/mtd/cy-snor/Kconfig linux-4.14.0-cy-snor/drivers/mtd/cy-snor/Kconfig
+--- linux-4.14.0/drivers/mtd/cy-snor/Kconfig	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/mtd/cy-snor/Kconfig	2019-05-23 15:59:26.013014923 +0200
+@@ -0,0 +1,34 @@
++#
++# linux/drivers/mtd/cy-snor/Kconfig
++#
++
++menu "Cypress SPI Memories Support"
++	depends on MTD
++
++config MTD_CY_SNOR
++	tristate "Cypress SPI Memories Chip Driver"
++	depends on MTD
++        select HAVE_MTD_OTP
++	help
++	  Enables support for Cypress HS/HL-T, FS/FL-S, FL-P/L/K and more
++	  flash and F-RAM memory devices (an additional hardware specific
++	  HAL driver is needed). The Cypress driver stack can be used as
++	  a substitute of the standard SPI driver stack (spi-nor & m25p80).
++	  Both driver stacks can be enabled and coexist in a single kernel,
++	  at the same time.
++
++config MTD_CY_SNOR_HAL
++	tristate "Generic HAL Driver for the SPI Framework"
++	depends on MTD && MTD_CY_SNOR
++	help
++	  Generic HAL (hardware abstraction layer) driver connecting the
++	  Cypress SPI memories chip driver to the Linux SPI framework.
++
++config MTD_CY_SNOR_FLEXSPI
++	tristate "Platform HAL Driver for NXP's (i.MX8) FlexSPI"
++	depends on MTD && MTD_CY_SNOR
++	help
++	  Standalone HAL driver connecting the Cypress SPI flash chip driver
++	  directly to a NXP (i.MX8) FlexSPI controller.
++
++endmenu
+diff -rupN linux-4.14.0/drivers/mtd/Makefile linux-4.14.0-cy-snor/drivers/mtd/Makefile
+--- linux-4.14.0/drivers/mtd/Makefile	2017-11-12 19:46:13.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/mtd/Makefile	2018-05-03 09:53:41.190632616 +0200
+@@ -32,7 +32,7 @@ obj-$(CONFIG_MTD_SWAP)		+= mtdswap.o
+ nftl-objs		:= nftlcore.o nftlmount.o
+ inftl-objs		:= inftlcore.o inftlmount.o
+ 
+-obj-y		+= chips/ lpddr/ maps/ devices/ nand/ onenand/ tests/
++obj-y		+= chips/ lpddr/ maps/ devices/ nand/ onenand/ cy-snor/ tests/
+ 
+ obj-$(CONFIG_MTD_SPI_NOR)	+= spi-nor/
+ obj-$(CONFIG_MTD_UBI)		+= ubi/
+diff -rupN linux-4.14.0/drivers/mtd/cy-snor/Makefile linux-4.14.0-cy-snor/drivers/mtd/cy-snor/Makefile
+--- linux-4.14.0/drivers/mtd/cy-snor/Makefile	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/mtd/cy-snor/Makefile	2019-05-23 15:59:35.730096487 +0200
+@@ -0,0 +1,9 @@
++#
++# Makefile for the Cypress SPI flash drivers
++#
++
++obj-$(CONFIG_MTD_CY_SNOR)		+= cy-snor.o
++
++obj-$(CONFIG_MTD_CY_SNOR_HAL)		+= cy-snor-hal.o
++
++obj-$(CONFIG_MTD_CY_SNOR_FLEXSPI)	+= cy-snor-flexspi.o
+diff -rupN linux-4.14.0/include/linux/spi/spi.h linux-4.14.0-cy-snor/include/linux/spi/spi.h
+--- linux-4.14.0/include/linux/spi/spi.h	2017-11-12 19:46:13.000000000 +0100
++++ linux-4.14.0-cy-snor/include/linux/spi/spi.h	2018-10-25 15:59:54.571319441 +0200
+@@ -163,6 +163,8 @@ struct spi_device {
+ #define	SPI_TX_QUAD	0x200			/* transmit with 4 wires */
+ #define	SPI_RX_DUAL	0x400			/* receive with 2 wires */
+ #define	SPI_RX_QUAD	0x800			/* receive with 4 wires */
++#define	SPI_TX_OCTAL	0x1000			/* transmit with 8 wires */
++#define	SPI_RX_OCTAL	0x2000			/* receive with 8 wires */
+ 	int			irq;
+ 	void			*controller_state;
+ 	void			*controller_data;
+@@ -762,10 +764,11 @@ extern void spi_res_release(struct spi_c
+  * by the results of previous messages and where the whole transaction
+  * ends when the chipselect goes intactive.
+  *
+- * When SPI can transfer in 1x,2x or 4x. It can get this transfer information
+- * from device through @tx_nbits and @rx_nbits. In Bi-direction, these
+- * two should both be set. User can set transfer mode with SPI_NBITS_SINGLE(1x)
+- * SPI_NBITS_DUAL(2x) and SPI_NBITS_QUAD(4x) to support these three transfer.
++ * When SPI can transfer in 1x,2x,4x or 8x. It can get this transfer
++ * information from device through @tx_nbits and @rx_nbits. In Bi-direction,
++ * these two should both be set. User can set transfer mode with
++ * SPI_NBITS_SINGLE(1x), SPI_NBITS_DUAL(2x), SPI_NBITS_QUAD(4x) and
++ * SPI_NBITS_OCTAL(8x) to support these four transfer.
+  *
+  * The code that submits an spi_message (and its spi_transfers)
+  * to the lower layers is responsible for managing its memory.
+@@ -789,11 +792,12 @@ struct spi_transfer {
+ 	struct sg_table rx_sg;
+ 
+ 	unsigned	cs_change:1;
+-	unsigned	tx_nbits:3;
+-	unsigned	rx_nbits:3;
++	unsigned	tx_nbits:4;
++	unsigned	rx_nbits:4;
+ #define	SPI_NBITS_SINGLE	0x01 /* 1bit transfer */
+ #define	SPI_NBITS_DUAL		0x02 /* 2bits transfer */
+ #define	SPI_NBITS_QUAD		0x04 /* 4bits transfer */
++#define	SPI_NBITS_OCTAL		0x08 /* 8bits transfer */
+ 	u8		bits_per_word;
+ 	u16		delay_usecs;
+ 	u32		speed_hz;
+diff -rupN linux-4.14.0/drivers/spi/spi.c linux-4.14.0-cy-snor/drivers/spi/spi.c
+--- linux-4.14.0/drivers/spi/spi.c	2017-11-12 19:46:13.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/spi/spi.c	2018-10-24 10:36:37.915721036 +0200
+@@ -2851,13 +2851,14 @@ static int __spi_validate(struct spi_dev
+ 		if (xfer->rx_buf && !xfer->rx_nbits)
+ 			xfer->rx_nbits = SPI_NBITS_SINGLE;
+ 		/* check transfer tx/rx_nbits:
+-		 * 1. check the value matches one of single, dual and quad
++		 * 1. check the value matches one of single, dual, quad, octal
+ 		 * 2. check tx/rx_nbits match the mode in spi_device
+ 		 */
+ 		if (xfer->tx_buf) {
+ 			if (xfer->tx_nbits != SPI_NBITS_SINGLE &&
+ 				xfer->tx_nbits != SPI_NBITS_DUAL &&
+-				xfer->tx_nbits != SPI_NBITS_QUAD)
++				xfer->tx_nbits != SPI_NBITS_QUAD &&
++				xfer->tx_nbits != SPI_NBITS_OCTAL)
+ 				return -EINVAL;
+ 			if ((xfer->tx_nbits == SPI_NBITS_DUAL) &&
+ 				!(spi->mode & (SPI_TX_DUAL | SPI_TX_QUAD)))
+@@ -2865,12 +2866,16 @@ static int __spi_validate(struct spi_dev
+ 			if ((xfer->tx_nbits == SPI_NBITS_QUAD) &&
+ 				!(spi->mode & SPI_TX_QUAD))
+ 				return -EINVAL;
++			if ((xfer->tx_nbits == SPI_NBITS_OCTAL) &&
++				!(spi->mode & SPI_TX_OCTAL))
++				return -EINVAL;
+ 		}
+ 		/* check transfer rx_nbits */
+ 		if (xfer->rx_buf) {
+ 			if (xfer->rx_nbits != SPI_NBITS_SINGLE &&
+ 				xfer->rx_nbits != SPI_NBITS_DUAL &&
+-				xfer->rx_nbits != SPI_NBITS_QUAD)
++				xfer->rx_nbits != SPI_NBITS_QUAD &&
++				xfer->rx_nbits != SPI_NBITS_OCTAL)
+ 				return -EINVAL;
+ 			if ((xfer->rx_nbits == SPI_NBITS_DUAL) &&
+ 				!(spi->mode & (SPI_RX_DUAL | SPI_RX_QUAD)))
+@@ -2878,6 +2883,9 @@ static int __spi_validate(struct spi_dev
+ 			if ((xfer->rx_nbits == SPI_NBITS_QUAD) &&
+ 				!(spi->mode & SPI_RX_QUAD))
+ 				return -EINVAL;
++			if ((xfer->rx_nbits == SPI_NBITS_OCTAL) &&
++				!(spi->mode & SPI_RX_OCTAL))
++				return -EINVAL;
+ 		}
+ 	}
+ 
+diff -rupN linux-4.14.0/include/linux/mtd/flashchip.h linux-4.14.0-cy-snor/include/linux/mtd/flashchip.h
+--- linux-4.14.0/include/linux/mtd/flashchip.h	2017-11-12 19:46:13.000000000 +0100
++++ linux-4.14.0-cy-snor/include/linux/mtd/flashchip.h	2018-04-30 14:12:09.200366336 +0200
+@@ -36,8 +36,10 @@ typedef enum {
+ 	FL_ERASING,
+ 	FL_ERASE_SUSPENDING,
+ 	FL_ERASE_SUSPENDED,
++	FL_ERASE_RESUMING,
+ 	FL_WRITING,
+ 	FL_WRITING_TO_BUFFER,
++	FL_OTP_READ,
+ 	FL_OTP_WRITE,
+ 	FL_WRITE_SUSPENDING,
+ 	FL_WRITE_SUSPENDED,
+diff -rupN linux-4.14.0/include/linux/mtd/cy-snor.h linux-4.14.0-cy-snor/include/linux/mtd/cy-snor.h
+--- linux-4.14.0/include/linux/mtd/cy-snor.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.14.0-cy-snor/include/linux/mtd/cy-snor.h	2019-05-23 15:38:32.614494092 +0200
+@@ -0,0 +1,170 @@
++/*
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
++ *
++ * Copyright 2009-2019 Cypress. All rights reserved.
++ *
++ * The contents of this file are subject to the terms of the GNU
++ * General Public License Version 2 only (the "License").
++ * You may not use this file except in compliance with the License.
++ * See the License for the specific language governing permissions
++ * and limitations under the License.
++ *
++ * If applicable, add the following below the License Header, with
++ * the fields enclosed by brackets [] replaced by your own identifying
++ * information: "Portions Copyrighted [year] [name of copyright owner]"
++ */
++
++#ifndef __LINUX_MTD_CY_SNOR_H
++#define __LINUX_MTD_CY_SNOR_H
++
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/flashchip.h>
++
++
++/* SPI commands */
++
++#define SPI_READ             0x03
++#define SPI_FAST_READ        0x0B
++#define SPI_DUAL_READ        0x3B
++#define SPI_QUAD_READ        0x6B
++#define SPI_DUAL_READ_HP     0xBB
++#define SPI_QUAD_READ_HP     0xEB
++#define SPI_QUAD_READ_HP_4   0xEC
++#define SPI_READ_ID          0x9F
++#define SPI_READ_STATUS      0x05
++#define SPI_CLEAR_STATUS_A   0x30
++#define SPI_CLEAR_STATUS_B   0x82
++#define SPI_WRITE_REG        0x01
++#define SPI_READ_CONFIG      0x35
++#define SPI_READ_ANY_REG     0x65
++#define SPI_WRITE_ANY_REG    0x71
++#define SPI_4BAM             0xB7
++#define SPI_BAR_WRITE        0x17
++#define SPI_WRITE_ENABLE     0x06
++#define SPI_ERASE            0xD8
++#define SPI_ERASE_4          0xDC
++#define SPI_ERASE_4K         0x20
++#define SPI_ERASE_4K_4       0x21
++#define SPI_ERASE_SUSPEND_A  0x75
++#define SPI_ERASE_SUSPEND_B  0xB0
++#define SPI_ERASE_RESUME_A   0x7A
++#define SPI_ERASE_RESUME_B   0x30
++#define SPI_PROGRAM          0x02
++#define SPI_PROGRAM_4        0x12
++#define SPI_DUAL_PROGRAM     0xA2
++#define SPI_DUAL_PROGRAM_HP  0xA1
++#define SPI_QUAD_PROGRAM     0x32
++#define SPI_QUAD_PROGRAM_HP  0xD2
++#define SPI_OTP_READ         0x4B
++#define SPI_OTP_PROGRAM      0x42
++#define SPI_PPB_READ_4       0xE2
++#define SPI_PPB_PROG_4       0xE3
++#define SPI_PPB_ERASE        0xE4
++
++
++/* Special address indicating no address bits to be sent to the device */
++
++#define SPI_NO_ADDR          0xFFFFFFFF
++
++
++/* Register addresses for SPI_READ_ANY_REG and SPI_WRITE_ANY_REG */
++
++#define AR_SR1NV             0x00000000
++#define AR_SR2NV             0x00000001
++#define AR_CR1NV             0x00000002
++#define AR_CR2NV             0x00000003
++#define AR_CR3NV             0x00000004
++#define AR_CR4NV             0x00000005
++#define AR_CR5NV             0x00000006
++
++#define AR_VFLASH            0x00800000
++#define AR_VFRAM             0x00070000
++
++#define AR_SR1V     ((flags & IS_FRAM ? AR_VFRAM : AR_VFLASH) + AR_SR1NV)
++#define AR_SR2V     ((flags & IS_FRAM ? AR_VFRAM : AR_VFLASH) + AR_SR2NV)
++#define AR_CR1V     ((flags & IS_FRAM ? AR_VFRAM : AR_VFLASH) + AR_CR1NV)
++#define AR_CR2V     ((flags & IS_FRAM ? AR_VFRAM : AR_VFLASH) + AR_CR2NV)
++#define AR_CR3V     ((flags & IS_FRAM ? AR_VFRAM : AR_VFLASH) + AR_CR3NV)
++#define AR_CR4V     ((flags & IS_FRAM ? AR_VFRAM : AR_VFLASH) + AR_CR4NV)
++#define AR_CR5V     ((flags & IS_FRAM ? AR_VFRAM : AR_VFLASH) + AR_CR5NV)
++
++
++/* Capability flags */
++
++#define HAS_MULTI_IO         0x00000001
++#define HAS_STATBIT_ERROR    0x00000002
++#define HAS_OTP              0x00000004
++#define HAS_CONFREG          0x00000008
++#define HAS_TBPARM           0x00000010
++#define ADDR32_BAR           0x00000020
++#define ADDR32_4BAM          0x00000040
++#define HAS_ERASESUSPEND     0x00000080
++#define HAS_DYN_PAGESIZE     0x00000100
++#define HAS_DYN_SECSIZE      0x00000200
++#define HAS_PARM_8X4K        0x00000400
++#define HAS_PARM_32X4K       0x00000800
++#define HAS_2DIES_1CS        0x00001000
++#define HAS_ECC              0x00002000
++#define HAS_ECC2             0x00004000
++#define HAS_RDAR             0x00008000
++#define HAS_OPI              0x00010000
++#define HAS_VREG_LATENCY     0x00020000
++#define IS_FRAM              0x00040000
++#define HAS_ASP              0x00080000
++
++
++/* I/O modes */
++
++typedef enum { SPI_SINGLE_IO,
++	       SPI_SINGLE_IO_FASTREAD,
++	       SPI_DUAL_O,
++	       SPI_DUAL_O_HP,
++	       SPI_DUAL_IO,
++	       SPI_DUAL_IO_HP,
++	       SPI_QUAD_O,
++	       SPI_QUAD_O_HP,
++	       SPI_QUAD_IO,
++	       SPI_QUAD_IO_HP,
++	       SPI_OPI
++} spi_io_type;
++
++
++/* SPI flash device info */
++
++struct cy_spi_flash {
++
++	spi_io_type io_mode;
++	/* requested I/O mode, needs to be set before the device is probed */
++
++	unsigned int vr_latency;
++	/* volatile register read latency cycles (default 0) */
++
++	unsigned int max_data_len_read;
++	unsigned int max_data_len_write;
++	/* maximum data length for read_op/write_op (0 = unlimited) */
++
++	int (*read_op)(struct cy_spi_flash *sf, unsigned char command,
++		       void *to, unsigned long from, size_t len);
++	/* basic read function (1 CS cycle, len <= max_data_len, may sleep) */
++
++	int (*write_op)(struct cy_spi_flash *sf, unsigned char command,
++			const void *from, unsigned long to, size_t len);
++	/* basic write function (1 CS cycle, len <= max_data_len, may sleep) */
++
++	struct flchip chip;
++	/* chip specifics (initialized by the probing function) */
++
++	void *priv;
++	/* board/HAL data for read_op/write_op, e.g. a mapped I/O address,
++	 * needs to be set before the probing function is called
++	 */
++
++};
++
++
++/* Vendor specific probing functions (can be unified at a later time) */
++
++extern struct mtd_info *cy_spi_probe(struct cy_spi_flash *spiflash);
++extern void cy_spi_destroy(struct mtd_info *mtd);
++
++#endif
+diff -rupN linux-4.14.0/drivers/mtd/cy-snor/cy-snor.c linux-4.14.0-cy-snor/drivers/mtd/cy-snor/cy-snor.c
+--- linux-4.14.0/drivers/mtd/cy-snor/cy-snor.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/mtd/cy-snor/cy-snor.c	2019-05-23 15:41:19.095891498 +0200
+@@ -0,0 +1,1905 @@
++/*
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
++ *
++ * Copyright 2009-2019 Cypress. All rights reserved.
++ *
++ * The contents of this file are subject to the terms of the GNU
++ * General Public License Version 2 only (the "License").
++ * You may not use this file except in compliance with the License.
++ * See the License for the specific language governing permissions
++ *
++ and limitations under the License.
++ *
++ * If applicable, add the following below the License Header, with
++ * the fields enclosed by brackets [] replaced by your own identifying
++ * information: "Portions Copyrighted [year] [name of copyright owner]"
++ */
++
++
++/* MTD chip driver for Cypress HS/HL-T, FS/FL-S, FL-P, FL-L, FL-K
++ * and other SPI memory devices
++ */
++
++#include <linux/module.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/types.h>
++#include <linux/slab.h>
++#include <linux/delay.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/cy-snor.h>
++
++#define ERASE_TIMEOUT            5  // s
++#define PROGRAM_TIMEOUT          1  // s
++#define ERASE_SUSPEND_LATENCY   40  // us
++#define ERASE_RESUME_LATENCY   100  // us
++
++/* For highest reliability with devices that have internal ECC, JFFS2 can be
++ * run in buffered block write mode. This avoids multiple write operations to
++ * the same 16 byte cache line and keeps the internal ECC of newer devices
++ * enabled. By default, it is off except for Semper Flash.
++ *
++ * 0 = Always off
++ * 1 = Off for legacy parts and on for Semper Flash (default)
++ * 2 = Always on
++ *
++ * Note: UBI/UBIFS does not support this mode. JFFS2 needs larger clean
++ *       markers (typ. 512 bytes) to be created during formatting or image
++ *       creation.
++ */
++#define BUFFERED_WRITE_MODE 1
++
++
++/* Device table:
++ * =============
++ *
++ * Note that not all devices have CFI or SFDP and some parameters cannot be
++ * retrieved via CFI/SFDP. Therefore, we use a hardcoded device table for now.
++ * All Cypress devices support FASTREAD mode, no extra flag needed for this.
++ */
++
++struct device_info {
++	char *name;                 /* device OPN */
++	int id[6];                  /* id bytes 4-6 are ignored if set to -1 */
++	unsigned int numblocks[2];  /* number of erase blocks per region */
++	unsigned int erasesize[2];  /* default sector size per region */
++	unsigned int pagesize;      /* default write page size */
++	unsigned int flags;         /* device flags (see cy-snor.h) */
++};
++
++
++static struct device_info cy_devinfo[] = {
++	{ "S28HS01GT",
++	  { 0x34, 0x5B, 0x1B, -1, -1, -1 }, { 512, 0 }, { 0x40000, 0 }, 512,
++	  HAS_OPI | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM | ADDR32_4BAM |
++	  HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K | HAS_ECC2 |
++	  HAS_RDAR | HAS_VREG_LATENCY| HAS_ASP },
++	{ "S28HS512T",
++	  { 0x34, 0x5B, 0x1A, -1, -1, -1 }, { 256, 0 }, { 0x40000, 0 }, 512,
++	  HAS_OPI | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM | ADDR32_4BAM |
++	  HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K | HAS_ECC2 |
++	  HAS_RDAR | HAS_VREG_LATENCY| HAS_ASP },
++	{ "S28HL01GT",
++	  { 0x34, 0x5A, 0x1B, -1, -1, -1 }, { 512, 0 }, { 0x40000, 0 }, 512,
++	  HAS_OPI | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM | ADDR32_4BAM |
++	  HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K | HAS_ECC2 |
++	  HAS_RDAR| HAS_VREG_LATENCY | HAS_ASP },
++	{ "S28HL512T",
++	  { 0x34, 0x5A, 0x1A, -1, -1, -1 }, { 256, 0 }, { 0x40000, 0 }, 512,
++	  HAS_OPI | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM | ADDR32_4BAM |
++	  HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K | HAS_ECC2 |
++	  HAS_RDAR | HAS_VREG_LATENCY| HAS_ASP },
++	{ "S25HS01GT",
++	  { 0x34, 0x2B, 0x1B, -1, -1, -1 }, { 512, 0 }, { 0x40000, 0 }, 512,
++	  HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  ADDR32_4BAM | HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K |
++	  HAS_ECC2 | HAS_RDAR | HAS_VREG_LATENCY | HAS_ASP },
++	{ "S25HS512T",
++	  { 0x34, 0x2B, 0x1A, -1, -1, -1 }, { 256, 0 }, { 0x40000, 0 }, 512,
++	  HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  ADDR32_4BAM | HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K |
++	  HAS_ECC2 | HAS_RDAR | HAS_VREG_LATENCY | HAS_ASP },
++	{ "S25HL01GT",
++	  { 0x34, 0x2A, 0x1B, -1, -1, -1 }, { 512, 0 }, { 0x40000, 0 }, 512,
++	  HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  ADDR32_4BAM | HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K |
++	  HAS_ECC2 | HAS_RDAR | HAS_VREG_LATENCY | HAS_ASP },
++	{ "S25HL512T",
++	  { 0x34, 0x2A, 0x1A, -1, -1, -1 }, { 256, 0 }, { 0x40000, 0 }, 512,
++	  HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  ADDR32_4BAM | HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_32X4K |
++	  HAS_ECC2 | HAS_RDAR | HAS_VREG_LATENCY | HAS_ASP },
++	{ "S70FS01GS",
++	  { 0x01, 0x02, 0x21, 0x4d, 0x00, 0x81 }, { 512, 0 }, { 0x40000, 0 },
++	  512, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  ADDR32_4BAM | HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_8X4K |
++	  HAS_2DIES_1CS | HAS_ECC | HAS_RDAR | HAS_ASP },
++	{ "S25FS512S",
++	  { 0x01, 0x02, 0x20, 0x4d, 0x00, 0x81 }, { 256, 0 }, { 0x40000, 0 },
++	  512, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  ADDR32_4BAM | HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_PARM_8X4K |
++	  HAS_ECC | HAS_RDAR | HAS_ASP },
++	{ "S25FS256S",
++	  { 0x01, 0x02, 0x19, 0x4d, 0x01, 0x81 }, { 512, 0 }, { 0x10000, 0 },
++	  512, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  ADDR32_4BAM | HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_DYN_SECSIZE |
++	  HAS_PARM_8X4K | HAS_ECC | HAS_RDAR | HAS_ASP },
++	{ "S25FS128S",
++	  { 0x01, 0x20, 0x18, 0x4d, 0x01, 0x81 }, { 256, 0 }, { 0x10000, 0 },
++	  512, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | HAS_TBPARM |
++	  HAS_ERASESUSPEND | HAS_DYN_PAGESIZE | HAS_DYN_SECSIZE |
++	  HAS_PARM_8X4K | HAS_ECC | HAS_RDAR | HAS_ASP },
++	{ "S25FL512S",
++	  { 0x01, 0x02, 0x20, 0x4d, 0x00, 0x80 }, { 256, 0 }, { 0x40000, 0 },
++	  512, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | ADDR32_BAR |
++	  HAS_ERASESUSPEND | HAS_ECC | HAS_ASP },
++	{ "S25FL256Sx01",
++	  { 0x01, 0x02, 0x19, 0x4d, 0x00, 0x80 }, { 128, 0 }, { 0x40000, 0 },
++	  512, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG | ADDR32_BAR |
++	  HAS_ERASESUSPEND | HAS_ECC | HAS_ASP },
++	{ "S25FL256Sx00",
++	  { 0x01, 0x02, 0x19, 0x4d, 0x01, 0x80 }, { 32, 510 },
++	  { 0x1000, 0x10000 }, 256, HAS_MULTI_IO | HAS_STATBIT_ERROR |
++	  HAS_CONFREG | HAS_TBPARM | ADDR32_BAR | HAS_ERASESUSPEND | HAS_ECC |
++	  HAS_ASP },
++	{ "S25FL128Sx01",
++	  { 0x01, 0x20, 0x18, 0x4d, 0x00, 0x80 }, { 64, 0 }, { 0x40000, 0 },
++	  512, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_CONFREG |
++	  HAS_ERASESUSPEND | HAS_ECC | HAS_ASP },
++	{ "S25FL128Sx00",
++	  { 0x01, 0x20, 0x18, 0x4d, 0x01, 0x80 }, { 32, 254 },
++	  { 0x1000, 0x10000 }, 256, HAS_MULTI_IO | HAS_STATBIT_ERROR |
++	  HAS_CONFREG | HAS_TBPARM | HAS_ERASESUSPEND | HAS_ECC | HAS_ASP },
++	{ "S25FL129Px01",
++	  { 0x01, 0x20, 0x18, 0x4d, 0x00, -1 }, { 64, 0 }, { 0x40000, 0 },
++	  256, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_OTP | HAS_CONFREG },
++	{ "S25FL129Px00",
++	  { 0x01, 0x20, 0x18, 0x4d, 0x01, -1 }, { 32, 254 },
++	  { 0x1000, 0x10000 }, 256, HAS_MULTI_IO | HAS_STATBIT_ERROR |
++	  HAS_OTP | HAS_CONFREG | HAS_TBPARM},
++	{ "S25FL128Px01",
++	  { 0x01, 0x20, 0x18, 0x03, 0x00, -1 }, {  64, 0 }, { 0x40000, 0 },
++	  256, 0 },
++	{ "S25FL128Px00",
++	  { 0x01, 0x20, 0x18, 0x03, 0x01, -1 }, { 256, 0 }, { 0x10000, 0 },
++	  256, 0 },
++	{ "S25FL064P",
++	  { 0x01, 0x02, 0x16, 0x4d, -1, -1 }, { 32, 126 }, { 0x1000, 0x10000 },
++	  256, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_OTP | HAS_CONFREG |
++	  HAS_TBPARM },
++	{ "S25FL032P",
++	  { 0x01, 0x02, 0x15, 0x4d, -1, -1 }, { 32, 62 }, { 0x1000, 0x10000 },
++	  256, HAS_MULTI_IO | HAS_STATBIT_ERROR | HAS_OTP | HAS_CONFREG |
++	  HAS_TBPARM },
++	{ "S25FL256L",
++	  { 0x01, 0x60, 0x19, -1, -1, -1 }, { 512, 0 }, { 0x10000, 0 }, 256,
++	  HAS_MULTI_IO | HAS_CONFREG | ADDR32_4BAM },
++	{ "S25FL128L",
++	  { 0x01, 0x60, 0x18, -1, -1, -1 }, { 256, 0 }, { 0x10000, 0 }, 256,
++	  HAS_MULTI_IO | HAS_CONFREG },
++	{ "S25FL064L",
++	  { 0x01, 0x60, 0x17, -1, -1, -1 }, { 128, 0 }, { 0x10000, 0 }, 256,
++	  HAS_MULTI_IO | HAS_CONFREG },
++	{ "S25FL064K",
++	  { 0xef, 0x40, 0x17, -1, -1, -1 }, { 2048, 0 }, { 0x1000, 0 }, 256,
++	  HAS_MULTI_IO | HAS_CONFREG },
++	{ "S25FL016K",
++	  { 0xef, 0x40, 0x15, -1, -1, -1 }, {  512, 0 }, { 0x1000, 0 }, 256,
++	  HAS_MULTI_IO | HAS_CONFREG },
++	{ "CY15B104QS",
++	  { 0x50, 0x51, 0x82, 0x06, -1, -1 }, { 1024, 0 }, { 512, 0 }, 512,
++	  HAS_MULTI_IO | HAS_CONFREG | HAS_RDAR | HAS_VREG_LATENCY | IS_FRAM }
++};
++
++
++static int device_ready(struct mtd_info *mtd, unsigned char *status);
++static int device_good(struct mtd_info *mtd, unsigned char status);
++
++
++/* ==========
++ * delay_usec
++ * ==========
++ */
++
++static void delay_usec(int us)
++{
++	if (us >= 1000)
++		msleep((us+999)/1000);
++	else {
++		udelay(us);
++		cond_resched();
++	}
++}
++
++
++/* ============
++ * get_confreg1
++ * ============
++ *
++ * For dual die single CS devices we read only one config register and
++ * and assume that the other has the same value.
++ */
++
++static int get_confreg1(struct mtd_info *mtd, unsigned char *conf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++
++	if (flags & HAS_RDAR)
++		return sf->read_op(sf, SPI_READ_ANY_REG, conf, AR_CR1V, 1);
++	else
++		return sf->read_op(sf, SPI_READ_CONFIG, conf, SPI_NO_ADDR, 1);
++}
++
++
++/* ============
++ * set_confreg1
++ * ============
++ *
++ * For dual die single CS devices we have to program both configuration
++ * registers (on both dies). No locking is needed since this is called by
++ * the probing function only
++ */
++
++static int set_confreg1(struct mtd_info *mtd, unsigned char conf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	unsigned long timeo;
++	unsigned char status, regs[2];
++	int i, ret = 0;
++	size_t addr = AR_CR1V;
++
++	for (i = 0; i < ((flags & HAS_2DIES_1CS) ? 2 : 1) && ret >= 0; i++) {
++
++		if (flags & HAS_RDAR) {
++			/* New volatile config register */
++
++			ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL,
++					   SPI_NO_ADDR, 0);
++			if (ret)
++				return ret;
++
++			ret = sf->write_op(sf, SPI_WRITE_ANY_REG, &conf,
++					   addr, 1);
++			if (ret)
++				return ret;
++
++		} else {
++			/* Classic non-volatile config register */
++
++			ret = sf->read_op(sf, SPI_READ_STATUS, &regs[0],
++					  SPI_NO_ADDR, 1);
++			if (ret)
++				return ret;
++
++			regs[1] = conf;
++			ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL,
++					   SPI_NO_ADDR, 0);
++			if (ret)
++				return ret;
++
++			ret = sf->write_op(sf, SPI_WRITE_REG, regs,
++					   SPI_NO_ADDR, sizeof(regs));
++			if (ret)
++				return ret;
++
++			/* poll for completion */
++
++			timeo = jiffies + PROGRAM_TIMEOUT * HZ;
++			for (;;) {
++				if (device_ready(mtd, &status))
++					break;
++				if (time_after(jiffies, timeo)) {
++					ret = -EIO;
++					pr_err("cy-snor software timeout\n");
++					break;
++				}
++				delay_usec(10); /* wait 10 us and try again */
++			}
++			if (device_good(mtd, status) <= 0)
++				return -EIO;
++		}
++		addr += (mtd->size >> 1);
++	}
++	return ret;
++}
++
++
++/* =============
++ * get_confreg3v
++ * =============
++ *
++ * For dual die single CS devices we combine the 4kB sector enable bits and
++ * assume that the remaining bits are the same for both dies.
++ */
++
++static int get_confreg3v(struct mtd_info *mtd, unsigned char *conf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	unsigned char c2;
++	int ret;
++
++	ret = sf->read_op(sf, SPI_READ_ANY_REG, conf, AR_CR3V, 1);
++	if (ret)
++		return ret;
++
++	if (flags & HAS_2DIES_1CS) {
++		ret = sf->read_op(sf, SPI_READ_ANY_REG, &c2,
++				  (mtd->size >> 1) | AR_CR3V, 1);
++		if (ret)
++			return ret;
++
++		if (!(c2 & 0x08))
++			*conf &= ~0x08;     /* parameter sectors enabled */
++	}
++	return 0;
++}
++
++
++/* =============
++ * set_confreg3v
++ * =============
++ *
++ * For dual die single CS devices we assume that CR3V is the same for both
++ * dies. This is true as long as we support just uniform sector mode.
++ */
++
++static int set_confreg3v(struct mtd_info *mtd, unsigned char conf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	int i, ret;
++	size_t addr = AR_CR3V;
++
++	ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL, SPI_NO_ADDR, 0);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < ((flags & HAS_2DIES_1CS) ? 2 : 1); i++) {
++		ret = sf->write_op(sf, SPI_WRITE_ANY_REG, &conf, addr, 1);
++		if (ret)
++			return ret;
++		addr += (mtd->size >> 1);
++	}
++	return 0;
++}
++
++
++/* ====================
++ * clear_confreg4v_ecc2
++ * ====================
++ *
++ * Disables 2-bit error detection in order to allow multi-pass programming.
++ * For dual die single CS devices we require CR4V to be the same for both dies.
++ */
++
++static int clear_confreg4v_ecc2(struct mtd_info *mtd)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	int i, ret;
++	size_t addr = AR_CR4V;
++	unsigned char conf;
++
++	ret = sf->read_op(sf, SPI_READ_ANY_REG, &conf, addr, 1);
++	if (ret)
++		return ret;
++
++	if (conf & 0x08) {
++		conf &= ~0x08;
++		ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL, SPI_NO_ADDR, 0);
++		if (ret)
++			return ret;
++
++		for (i = 0; i < ((flags & HAS_2DIES_1CS) ? 2 : 1); i++) {
++			ret = sf->write_op(sf, SPI_WRITE_ANY_REG, &conf, addr,
++					   1);
++			if (ret)
++				return ret;
++			addr += (mtd->size >> 1);
++		}
++	}
++	return 0;
++}
++
++
++/* ============
++ * device_ready
++ * ============
++ */
++
++static int device_ready(struct mtd_info *mtd, unsigned char *status)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	unsigned char s1;
++	int ret;
++
++	if (flags & HAS_RDAR) {
++		ret = sf->read_op(sf, SPI_READ_ANY_REG, status, AR_SR1V, 1);
++		if (ret < 0)
++			return ret;
++
++		if (flags & HAS_2DIES_1CS) {
++			ret = sf->read_op(sf, SPI_READ_ANY_REG, &s1,
++					  (mtd->size >> 1) | AR_SR1V, 1);
++			if (ret < 0)
++				return ret;
++			*status |= s1;
++		}
++	} else {
++		ret = sf->read_op(sf, SPI_READ_STATUS, status,
++				  sf->io_mode == SPI_OPI ? 0 : SPI_NO_ADDR, 1);
++		if (ret < 0)
++			return ret;
++	}
++
++	return (*status & 0x01) ? 0 : 1;
++}
++
++
++/* ===========
++ * device_good
++ * ===========
++ *
++ * Checks the device status that is returned by device_ready().
++ * Returns 1 if the device is ready and no error has been found.
++ * Returns 0 if the device status indicates an error situation.
++ * Returns a negative value if something else has happened.
++ */
++
++static int device_good(struct mtd_info *mtd, unsigned char status)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++
++	if (((flags & HAS_STATBIT_ERROR) && (status & 0x60)))
++		return sf->write_op(sf, sf->io_mode == SPI_OPI ?
++				    SPI_CLEAR_STATUS_B : SPI_CLEAR_STATUS_A,
++				    NULL, SPI_NO_ADDR, 0);
++
++	return (status & 0x01) ? 0 : 1;
++}
++
++
++/* ========
++ * get_chip
++ * ========
++ */
++
++static int get_chip(struct cy_spi_flash *sf, int mode)
++{
++	struct flchip *chip = &sf->chip;
++	unsigned int flags = *(unsigned int *)(chip->priv);
++	int ret;
++	DECLARE_WAITQUEUE(wait, current);
++
++ retry:
++	switch (chip->state) {
++	case FL_READY:
++		return 0;
++	case FL_ERASING:    /* suspend the erase to service read requests */
++		if ((flags & HAS_ERASESUSPEND) && (mode == FL_READING)) {
++			chip->state = FL_ERASE_SUSPENDING;
++			chip->oldstate = FL_ERASING;
++
++			ret = sf->write_op(sf, flags & HAS_OPI ?
++					   SPI_ERASE_SUSPEND_B :
++					   SPI_ERASE_SUSPEND_A,
++					   NULL, SPI_NO_ADDR, 0);
++			if (ret)
++				return ret;
++
++			mutex_unlock(&chip->mutex);
++			delay_usec(ERASE_SUSPEND_LATENCY);
++			mutex_lock(&chip->mutex);
++
++			chip->state = FL_ERASE_SUSPENDED;
++			return 0;
++		}
++	default:            /* wait until we get notified */
++		set_current_state(TASK_UNINTERRUPTIBLE);
++		add_wait_queue(&chip->wq, &wait);
++		mutex_unlock(&chip->mutex);
++		schedule();
++		remove_wait_queue(&chip->wq, &wait);
++		mutex_lock(&chip->mutex);
++		goto retry;
++	}
++	return 0;
++}
++
++
++/* ========
++ * put_chip
++ * ========
++ */
++
++static int put_chip(struct cy_spi_flash *sf)
++{
++	struct flchip *chip = &sf->chip;
++	unsigned int flags = *(unsigned int *)(chip->priv);
++	int ret;
++
++	if ((flags & HAS_ERASESUSPEND) && (chip->oldstate == FL_ERASING)) {
++		chip->state = FL_ERASE_RESUMING;
++		chip->oldstate = FL_READY;
++
++		ret = sf->write_op(sf, flags & HAS_OPI ?
++				   SPI_ERASE_RESUME_B : SPI_ERASE_RESUME_A,
++				   NULL, SPI_NO_ADDR, 0);
++		if (ret)
++			return ret;
++
++		mutex_unlock(&chip->mutex);
++		delay_usec(ERASE_RESUME_LATENCY);
++		mutex_lock(&chip->mutex);
++
++		chip->state = FL_ERASING;
++		chip->erase_suspended = 1;
++	}
++	wake_up(&chip->wq);
++	return 0;
++}
++
++
++/* =================
++ * do_erase_oneblock
++ * =================
++ */
++
++static int do_erase_oneblock(struct mtd_info *mtd, unsigned long adr,
++			     int param4k)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	unsigned long timeo;
++	unsigned char status;
++	int ret = 0;
++	DECLARE_WAITQUEUE(wait, current);
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_ERASING);
++	if (ret)
++		goto out;
++
++	chip->state = FL_ERASING;
++	chip->erase_suspended = 0;
++	chip->in_progress_block_addr = adr;
++
++	ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL, SPI_NO_ADDR, 0);
++	if (ret)
++		goto out;
++
++	ret = sf->write_op(sf, sf->io_mode == SPI_OPI ?
++			   (param4k ? SPI_ERASE_4K_4 : SPI_ERASE_4) :
++			   (param4k ? SPI_ERASE_4K : SPI_ERASE), NULL, adr, 0);
++	if (ret)
++		goto out;
++
++	timeo = jiffies + ERASE_TIMEOUT * HZ;
++
++	for (;;) {
++		if (chip->state != FL_ERASING) {
++
++			/* Someone has suspended the erase,
++			 * sleep until we get resumed:
++			 */
++
++			set_current_state(TASK_UNINTERRUPTIBLE);
++			add_wait_queue(&chip->wq, &wait);
++			mutex_unlock(&chip->mutex);
++			schedule();
++			remove_wait_queue(&chip->wq, &wait);
++			mutex_lock(&chip->mutex);
++			continue;
++		}
++		if (chip->erase_suspended) {
++
++			/* The erase was suspended and resumed,
++			 * reset the timeout:
++			 */
++
++			timeo = jiffies + ERASE_TIMEOUT * HZ;
++			chip->erase_suspended = 0;
++		}
++
++		if (device_ready(mtd, &status))
++			break;
++		if (time_after(jiffies, timeo)) {
++			ret = -EIO;
++			pr_err("cy-snor software timeout\n");
++			break;
++		}
++		mutex_unlock(&chip->mutex);
++		delay_usec(1000);  /* drop the lock, wait 1 ms and try again */
++		mutex_lock(&chip->mutex);
++	}
++	if (device_good(mtd, status) <= 0)
++		ret = -EIO;
++
++ out:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++	return ret;
++}
++
++
++/* ============
++ * cy_spi_erase
++ * ============
++ */
++
++static int cy_spi_erase(struct mtd_info *mtd, struct erase_info *instr)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	struct mtd_erase_region_info *regions = mtd->eraseregions;
++	unsigned long ofs, len;
++	int ret = 0, i = -1, esize = mtd->erasesize;
++
++	if (flags & IS_FRAM)
++		goto out;
++
++	ofs = instr->addr;
++	len = instr->len;
++
++	while (i < mtd->numeraseregions - 1 && ofs >= regions[i + 1].offset)
++		i++;
++	if (i >= 0)
++		esize = regions[i].erasesize;
++
++	/* Loop over all sectors that need to be erased */
++
++	while (len) {
++		ret = do_erase_oneblock(mtd, ofs, (esize == 4096));
++		if (ret)
++			goto out;
++
++		ofs += esize;
++		len -= esize;
++
++		if (i < mtd->numeraseregions - 1 &&
++		    ofs >= regions[i + 1].offset) {
++			i++;
++			esize = regions[i].erasesize;
++		}
++	}
++
++ out:
++	instr->state = MTD_ERASE_DONE;
++	mtd_erase_callback(instr);
++	return ret;
++}
++
++
++/* ===============
++ * do_write_buffer
++ * ===============
++ */
++
++static int do_write_buffer(struct mtd_info *mtd, unsigned long adr,
++			   const u_char *buf, int len)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	struct flchip *chip = &sf->chip;
++	unsigned long timeo;
++	unsigned char status, cmd;
++	int ret;
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_WRITING);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	chip->state = FL_WRITING;
++
++	switch (sf->io_mode) {
++	case SPI_OPI:
++		cmd = SPI_PROGRAM_4;
++		break;
++	case SPI_QUAD_IO_HP:
++		cmd = SPI_QUAD_PROGRAM_HP;
++		break;
++	case SPI_QUAD_IO:
++		cmd = SPI_QUAD_PROGRAM;
++		break;
++	case SPI_DUAL_IO_HP:
++		cmd = SPI_DUAL_PROGRAM_HP;
++		break;
++	case SPI_DUAL_IO:
++		cmd = SPI_DUAL_PROGRAM;
++		break;
++	case SPI_QUAD_O_HP:
++	case SPI_QUAD_O:
++	case SPI_DUAL_O_HP:
++	case SPI_DUAL_O:
++	case SPI_SINGLE_IO_FASTREAD:
++	case SPI_SINGLE_IO:
++		cmd = SPI_PROGRAM;
++		break;
++	default:
++		pr_err("Unsupported SPI I/O mode\n");
++		ret = -EIO;
++		goto out;
++	}
++
++	ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL, SPI_NO_ADDR, 0);
++	if (ret)
++		goto out;
++
++	ret = sf->write_op(sf, cmd, buf, adr, len);
++	if (ret)
++		goto out;
++
++	if (flags & IS_FRAM)
++		goto out;
++
++	timeo = jiffies + PROGRAM_TIMEOUT * HZ;
++
++	for (;;) {
++		if (device_ready(mtd, &status))
++			break;
++		if (time_after(jiffies, timeo)) {
++			ret = -EIO;
++			pr_err("cy-snor software timeout\n");
++			break;
++		}
++		mutex_unlock(&chip->mutex);
++		delay_usec(10);  /* drop the lock, wait 10 us and try again */
++		mutex_lock(&chip->mutex);
++	}
++	if (device_good(mtd, status) <= 0)
++		ret = -EIO;
++
++ out:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++	return ret;
++}
++
++
++/* ============
++ * cy_spi_write
++ * ============
++ */
++
++static int cy_spi_write(struct mtd_info *mtd, loff_t to, size_t len,
++			size_t *retlen, const u_char *buf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	int ret = 0;
++
++	*retlen = 0;
++
++	while (len) {          /* we must not cross write page boundaries */
++		int size = mtd->writebufsize - (to & (mtd->writebufsize - 1));
++
++		if (sf->max_data_len_write && size > sf->max_data_len_write)
++			size = sf->max_data_len_write;
++
++		if (size > len)
++			size = len;
++
++		ret = do_write_buffer(mtd, to, buf, size);
++		if (ret)
++			return ret;
++
++		to += size;
++		buf += size;
++		(*retlen) += size;
++		len -= size;
++	}
++	return ret;
++}
++
++
++/* ============
++ * cy_spi_read
++ * ============
++ */
++
++static int cy_spi_read(struct mtd_info *mtd, loff_t from, size_t len,
++		       size_t *retlen, u_char *buf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	unsigned char cmd;
++	int ret, size;
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_READING);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	chip->state = FL_READING;
++
++	switch (sf->io_mode) {
++	case SPI_OPI:
++		cmd = SPI_QUAD_READ_HP_4;
++		break;
++	case SPI_QUAD_O_HP:
++	case SPI_QUAD_IO_HP:
++		cmd = SPI_QUAD_READ_HP;
++		break;
++	case SPI_QUAD_O:
++	case SPI_QUAD_IO:
++		cmd = SPI_QUAD_READ;
++		break;
++	case SPI_DUAL_O_HP:
++	case SPI_DUAL_IO_HP:
++		cmd = SPI_DUAL_READ_HP;
++		break;
++	case SPI_DUAL_O:
++	case SPI_DUAL_IO:
++		cmd = SPI_DUAL_READ;
++		break;
++	case SPI_SINGLE_IO_FASTREAD:
++		cmd = SPI_FAST_READ;
++		break;
++	case SPI_SINGLE_IO:
++		cmd = SPI_READ;
++		break;
++	default:
++		pr_err("Unsupported SPI I/O mode\n");
++		ret = -EIO;
++		goto out;
++	}
++
++	*retlen = 0;
++
++	while (len) {
++		if (sf->max_data_len_read && len > sf->max_data_len_read)
++			size = sf->max_data_len_read;
++		else
++			size = len;
++
++		ret = sf->read_op(sf, cmd, buf, from, size);
++		if (ret)
++			goto out;
++
++		from += size;
++		buf += size;
++		(*retlen) += size;
++		len -= size;
++	}
++
++ out:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++	return ret;
++}
++
++
++/* ===========
++ * cy_spi_sync
++ * ===========
++ */
++
++static void cy_spi_sync(struct mtd_info *mtd)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	DECLARE_WAITQUEUE(wait, current);
++
++ retry:
++	mutex_lock(&chip->mutex);
++
++	if (chip->state != FL_READY) {
++		add_wait_queue(&chip->wq, &wait);  /* wait until op done */
++		mutex_unlock(&chip->mutex);
++		schedule();
++		remove_wait_queue(&chip->wq, &wait);
++		goto retry;
++	}
++
++	mutex_unlock(&chip->mutex);
++}
++
++
++/* ==============
++ * cy_spi_suspend
++ * ==============
++ */
++
++static int cy_spi_suspend(struct mtd_info *mtd)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	int ret = 0;
++
++	mutex_lock(&chip->mutex);
++
++	switch (chip->state) {
++	case FL_READY:
++		chip->state = FL_PM_SUSPENDED;
++	case FL_PM_SUSPENDED:
++		break;
++	default:
++		ret = -EAGAIN;
++	}
++
++	mutex_unlock(&chip->mutex);
++
++	return ret;
++}
++
++
++/* =============
++ * cy_spi_resume
++ * =============
++ */
++
++static void cy_spi_resume(struct mtd_info *mtd)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++
++	mutex_lock(&chip->mutex);
++
++	if (chip->state == FL_PM_SUSPENDED) {
++		chip->state = FL_READY;
++		wake_up(&chip->wq);
++	} else
++		pr_err("Chip not in FL_PM_SUSPENDED state upon resume\n");
++
++	mutex_unlock(&chip->mutex);
++}
++
++
++/* ===============
++ * cy_spi_otp_read
++ * ===============
++ */
++
++static int cy_spi_otp_read(struct mtd_info *mtd, loff_t from, size_t len,
++			   size_t *retlen, u_char *buf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	int ret, size;
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_OTP_READ);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	chip->state = FL_OTP_READ;
++
++	while (len) {
++		if (sf->max_data_len_read && len > sf->max_data_len_read)
++			size = sf->max_data_len_read;
++		else
++			size = len;
++
++		ret = sf->read_op(sf, SPI_OTP_READ, buf, from, size);
++		if (ret)
++			goto out;
++
++		from += size;
++		buf += size;
++		(*retlen) += size;
++		len -= size;
++	}
++
++ out:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++	return ret;
++}
++
++
++/* ================
++ * cy_spi_otp_write
++ * ================
++ */
++
++static int cy_spi_otp_write(struct mtd_info *mtd, loff_t from, size_t len,
++			    size_t *retlen, u_char *buf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	unsigned long timeo;
++	unsigned char status;
++	int ret;
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_OTP_WRITE);
++	if (ret)
++		goto out;
++
++	chip->state = FL_OTP_WRITE;
++
++	*retlen = 0;
++
++	while (len && !ret) {
++		ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL,
++				   SPI_NO_ADDR, 0);
++		if (ret)
++			goto out;
++
++		ret = sf->write_op(sf, SPI_OTP_PROGRAM, buf, from, 1);
++		if (ret)
++			goto out;
++
++		chip->state = FL_WRITING;
++
++		timeo = jiffies + PROGRAM_TIMEOUT * HZ;
++
++		for (;;) {
++			if (device_ready(mtd, &status))
++				break;
++			if (time_after(jiffies, timeo)) {
++				ret = -EIO;
++				pr_err("cy-snor software timeout\n");
++				break;
++			}
++			mutex_unlock(&chip->mutex);
++			delay_usec(10);   /* wait 10 us and try again */
++			mutex_lock(&chip->mutex);
++		}
++		if (device_good(mtd, status) <= 0)
++			ret = -EIO;
++
++		buf++;
++		from++;
++		len--;
++		(*retlen)++;
++	}
++
++ out:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++	return ret;
++}
++
++
++/* ===============
++ * cy_spi_otp_info
++ * ===============
++ */
++
++static int cy_spi_otp_info(struct mtd_info *mtd, size_t len, size_t *retlen,
++			   struct otp_info *buf)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	unsigned char lockbits[2];
++	int i, ret;
++
++	*retlen = 0;
++	if (len < 33 * sizeof(struct otp_info))
++		return -EIO;
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_OTP_READ);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	chip->state = FL_OTP_READ;
++
++	ret = sf->read_op(sf, SPI_OTP_READ, lockbits, 0x100, 1);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	for (i = 0; i < 2; i++) {
++		buf[i].start  = 0x102 + i * 8;
++		buf[i].length = 8;
++		buf[i].locked = !((lockbits[0] >> i) & 0x01);
++	}
++
++	ret = sf->read_op(sf, SPI_OTP_READ, lockbits, 0x112, 2);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	for (i = 0; i < 8; i++) {
++		buf[2 + i].start  = 0x114 + i * 16;
++		buf[2 + i].length = 16;
++		buf[2 + i].locked = !((lockbits[0] >> i) & 0x01);
++	}
++	for (i = 0; i < 8; i++) {
++		buf[10 + i].start  = 0x194 + i * 16;
++		buf[10 + i].length = 16;
++		buf[10 + i].locked = !((lockbits[1] >> i) & 0x01);
++	}
++
++	ret = sf->read_op(sf, SPI_OTP_READ, lockbits, 0x214, 2);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	for (i = 0; i < 8; i++) {
++		buf[18 + i].start  = 0x216 + i * 16;
++		buf[18 + i].length = 16;
++		buf[18 + i].locked = !((lockbits[0] >> i) & 0x01);
++	}
++	for (i = 0; i < 6; i++) {
++		buf[26 + i].start  = 0x296 + i * 16;
++		buf[26 + i].length = 16;
++		buf[26 + i].locked = !((lockbits[1] >> i) & 0x01);
++	}
++	buf[32].start  = 0x2f6;
++	buf[32].length = 10;
++	buf[32].locked = !((lockbits[1] >> 6) & 0x01);
++
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++
++	*retlen = 33 * sizeof(struct otp_info);
++	return ret;
++}
++
++
++/* ===============
++ * cy_spi_otp_lock
++ * ===============
++ */
++
++static int cy_spi_otp_lock(struct mtd_info *mtd, loff_t from, size_t len)
++{
++	int i, p, ret;
++	unsigned char lockbits[5] = { 0xff, 0xff, 0xff, 0xff, 0xff };
++	const int lockaddr[5] = { 0x100, 0x112, 0x113, 0x214, 0x215 };
++	size_t retlen;
++
++	for (p = from; p < from + len; p++) {
++		for (i = 0; i < 2; i++)
++			if (p >= 0x102 + i * 8 && p < 0x102 + (i + 1) * 8)
++				lockbits[0] &= ~(1 << i);
++		for (i = 0; i < 8; i++)
++			if (p >= 0x114 + i * 16 && p < 0x114 + (i + 1) * 16)
++				lockbits[1] &= ~(1 << i);
++		for (i = 0; i < 8; i++)
++			if (p >= 0x194 + i * 16 && p < 0x194 + (i + 1) * 16)
++				lockbits[2] &= ~(1 << i);
++		for (i = 0; i < 8; i++)
++			if (p >= 0x216 + i * 16 && p < 0x216 + (i + 1) * 16)
++				lockbits[3] &= ~(1 << i);
++		for (i = 0; i < 6; i++)
++			if (p >= 0x296 + i * 16 && p < 0x296 + (i + 1) * 16)
++				lockbits[4] &= ~(1 << i);
++		if (p >= 0x2f6 && p < 0x2f6 + 10)
++			lockbits[4] &= ~0x40;
++	}
++
++	for (i = 0; i < 5; i++)
++		if (lockbits[i] != 0xff) {
++			ret = cy_spi_otp_write(mtd, lockaddr[i], 1, &retlen,
++					       &lockbits[i]);
++			if (ret || retlen != 1)
++				return ret;
++		}
++
++	return 0;
++}
++
++
++/* ====================
++ * cy_spi_ppb_is_locked
++ * ====================
++ */
++
++static int cy_spi_ppb_is_locked(struct mtd_info *mtd, loff_t ofs, uint64_t len)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	struct mtd_erase_region_info *regions = mtd->eraseregions;
++	int i = -1, ret, esize = mtd->erasesize, locked = 0;
++	unsigned char status;
++
++	while (i < mtd->numeraseregions - 1 && ofs >= regions[i + 1].offset)
++		i++;
++	if (i >= 0)
++		esize = regions[i].erasesize;
++
++	/* Get chip and loop over all covered sectors */
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_READING);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	chip->state = FL_READING;
++
++	while (len) {
++		ret = sf->read_op(sf, SPI_PPB_READ_4, &status, ofs, 1);
++		if (ret)
++			goto out;
++
++		if (status == 0 && !locked)
++			locked = 1;
++
++		ofs += esize;
++		len -= esize;
++
++		if (i < mtd->numeraseregions - 1 &&
++		    ofs >= regions[i + 1].offset) {
++			i++;
++			esize = regions[i].erasesize;
++		}
++	}
++
++ out:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++
++	return (ret < 0 ? ret : locked);
++}
++
++
++/* ===============
++ * do_lock_one_ppb
++ * ===============
++ */
++
++static int do_lock_one_ppb(struct mtd_info *mtd, unsigned long adr)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	unsigned long timeo;
++	unsigned char status;
++	int ret;
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_WRITING);
++	if (ret) {
++		mutex_unlock(&chip->mutex);
++		return ret;
++	}
++	chip->state = FL_WRITING;
++
++	ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL, SPI_NO_ADDR, 0);
++	if (ret)
++		goto out;
++
++	ret = sf->write_op(sf, SPI_PPB_PROG_4, NULL, adr, 0);
++	if (ret)
++		goto out;
++
++	timeo = jiffies + PROGRAM_TIMEOUT * HZ;
++
++	for (;;) {
++		if (device_ready(mtd, &status))
++			break;
++		if (time_after(jiffies, timeo)) {
++			ret = -EIO;
++			pr_err("cy-snor software timeout\n");
++			break;
++		}
++		mutex_unlock(&chip->mutex);
++		delay_usec(10);  /* drop the lock, wait 10 us and try again */
++		mutex_lock(&chip->mutex);
++	}
++	if (device_good(mtd, status) <= 0)
++		ret = -EIO;
++
++ out:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++	return ret;
++}
++
++
++/* ===============
++ * cy_spi_ppb_lock
++ * ===============
++ */
++
++static int cy_spi_ppb_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
++{
++	struct mtd_erase_region_info *regions = mtd->eraseregions;
++	int ret, i = -1, esize = mtd->erasesize;
++
++	while (i < mtd->numeraseregions - 1 && ofs >= regions[i + 1].offset)
++		i++;
++	if (i >= 0)
++		esize = regions[i].erasesize;
++
++	/* Loop over all covered sectors and lock them one by one */
++
++	while (len) {
++		ret = do_lock_one_ppb(mtd, ofs);
++		if (ret)
++			return ret;
++
++		ofs += esize;
++		len -= esize;
++
++		if (i < mtd->numeraseregions - 1 &&
++		    ofs >= regions[i + 1].offset) {
++			i++;
++			esize = regions[i].erasesize;
++		}
++	}
++	return 0;
++}
++
++
++/* =================
++ * cy_spi_ppb_unlock
++ * =================
++ */
++
++static int cy_spi_ppb_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++	struct flchip *chip = &sf->chip;
++	struct mtd_erase_region_info *regions = mtd->eraseregions;
++	unsigned char *locked, status;
++	unsigned long timeo;
++	int ret = 0, n, nsec, i = -1, esize = mtd->erasesize, erase_needed = 0;
++	loff_t tmp;
++
++	/* Allocate a sector state table */
++
++	if (mtd->numeraseregions) {
++		nsec = 0;
++		for (i = 0; i < mtd->numeraseregions; i++)
++			nsec += regions[i].numblocks;
++	}
++	else
++		nsec = mtd->size / mtd->erasesize;
++
++	locked = kzalloc(nsec * sizeof(int), GFP_KERNEL);
++	if (!locked)
++		return -ENOMEM;
++
++	/* Save the lock state of all sectors in the device */
++
++	if (mtd->numeraseregions) {
++		i = 0;
++		esize = regions[0].erasesize;
++	}
++	tmp = 0;
++	for (n = 0; n < nsec; n++) {
++		ret = cy_spi_ppb_is_locked(mtd, tmp, esize);
++		if (ret < 0)
++			goto out;
++		locked[n] = ret;
++
++		tmp += esize;
++
++		if (i < mtd->numeraseregions - 1 &&
++		    tmp >= regions[i + 1].offset) {
++			i++;
++			esize = regions[i].erasesize;
++		}
++	}
++
++	/* Find the right eraseregion and sector to start with */
++
++	if (mtd->numeraseregions) {
++		n = 0;
++		i = 0;
++		while (i < mtd->numeraseregions - 1 &&
++		       ofs >= regions[i + 1].offset) {
++			n += regions[i].numblocks;
++			i++;
++		}
++		esize = regions[i].erasesize;
++		n += (ofs - regions[i].offset) / esize;
++	}
++	else
++		n = ofs / esize;
++
++	/* Loop over all covered sectors and update the state table */
++
++	while (len) {
++		if (locked[n]) {
++			locked[n] = 0;
++			erase_needed = 1;
++		}
++
++		ofs += esize;
++		len -= esize;
++		n++;
++
++		if (i < mtd->numeraseregions - 1 &&
++		    ofs >= regions[i + 1].offset) {
++			i++;
++			esize = regions[i].erasesize;
++		}
++	}
++
++	if (!erase_needed)
++		goto out;
++
++	/* Erase all PPBs */
++
++	mutex_lock(&chip->mutex);
++	ret = get_chip(sf, FL_WRITING);
++	if (ret)
++		goto out2;
++
++	chip->state = FL_WRITING;   /*  no erase suspend here */
++
++	ret = sf->write_op(sf, SPI_WRITE_ENABLE, NULL, SPI_NO_ADDR, 0);
++	if (ret)
++		goto out2;
++
++	ret = sf->write_op(sf, SPI_PPB_ERASE, NULL, SPI_NO_ADDR, 0);
++	if (ret)
++		goto out2;
++
++	timeo = jiffies + ERASE_TIMEOUT * HZ;
++
++	for (;;) {
++		if (device_ready(mtd, &status))
++			break;
++		if (time_after(jiffies, timeo)) {
++			ret = -EIO;
++			pr_err("cy-snor software timeout\n");
++			break;
++		}
++		mutex_unlock(&chip->mutex);
++		delay_usec(1000);  /* drop the lock, wait 1 ms and try again */
++		mutex_lock(&chip->mutex);
++	}
++	if (device_good(mtd, status) <= 0)
++		ret = -EIO;
++
++ out2:
++	chip->state = FL_READY;
++	if (ret == 0)
++		ret = put_chip(sf);
++	mutex_unlock(&chip->mutex);
++
++	if (ret)
++		goto out;
++
++	/* Program updated sector state table */
++
++	if (mtd->numeraseregions) {
++		i = 0;
++		esize = regions[0].erasesize;
++	}
++	tmp = 0;
++	for (n = 0; n < nsec; n++) {
++		if (locked[n]) {
++			ret = do_lock_one_ppb(mtd, tmp);
++			if (ret)
++				goto out;
++		}
++		tmp += esize;
++
++		if (i < mtd->numeraseregions - 1 &&
++		    tmp >= regions[i + 1].offset) {
++			i++;
++			esize = regions[i].erasesize;
++		}
++	}
++
++ out:
++	kfree(locked);
++	return ret;
++}
++
++
++/* ============
++ * cy_spi_probe
++ * ============
++ */
++
++struct mtd_info *cy_spi_probe(struct cy_spi_flash *sf)
++{
++	struct mtd_info *mtd;
++	unsigned char id_buf[6], conf;
++	int i, set_cr1 = 0;
++	int top_boot = 0, big_sectors = 0, parameter_sectors = 0;
++
++	/* Initialize sf->chip */
++
++	sf->chip.start = 0;
++	sf->chip.state = FL_READY;
++	init_waitqueue_head(&(sf->chip.wq));
++	mutex_init(&sf->chip.mutex);
++
++	sf->chip.priv = kzalloc(sizeof(int), GFP_KERNEL);
++	if (!sf->chip.priv)
++		return NULL;
++
++	/* Reset the device and check its device ID */
++
++	if (sf->write_op(sf, sf->io_mode == SPI_OPI ? SPI_CLEAR_STATUS_B :
++			 SPI_CLEAR_STATUS_A, NULL, SPI_NO_ADDR, 0)) {
++		pr_err("Failed to clear status register\n");
++		return NULL;
++	}
++	if (sf->read_op(sf, SPI_READ_ID, id_buf, sf->io_mode == SPI_OPI ? 0 :
++			SPI_NO_ADDR, sizeof(id_buf))) {
++		pr_err("Failed to read SPI flash device ID\n");
++		return NULL;
++	}
++
++ retry:
++	for (i = 0; i < ARRAY_SIZE(cy_devinfo); i++) {
++		if ((sf->vr_latency &&
++		     !(cy_devinfo[i].flags & HAS_VREG_LATENCY)) ||
++		    id_buf[0] != cy_devinfo[i].id[0]            ||
++		    id_buf[1] != cy_devinfo[i].id[1]            ||
++		    id_buf[2] != cy_devinfo[i].id[2]            ||
++		    (id_buf[3] != cy_devinfo[i].id[3] &&
++		     -1 != cy_devinfo[i].id[3])                 ||
++		    (id_buf[4] != cy_devinfo[i].id[4] &&
++		     -1 != cy_devinfo[i].id[4])                 ||
++		    (id_buf[5] != cy_devinfo[i].id[5] &&
++		     -1 != cy_devinfo[i].id[5]))
++			continue;
++
++		/* Save device flags */
++
++		*(unsigned int *)(sf->chip.priv) = cy_devinfo[i].flags;
++
++		/* Enable 4 byte addressing if needed */
++
++		if (sf->io_mode != SPI_OPI) {
++			if (cy_devinfo[i].flags & ADDR32_BAR) {
++				unsigned char bar = 0x80;
++
++				if (sf->write_op(sf, SPI_BAR_WRITE, &bar,
++						 SPI_NO_ADDR, 1)) {
++					pr_err("Failed to set 4 byte mode\n");
++					return NULL;
++				}
++			} else if (cy_devinfo[i].flags & ADDR32_4BAM)
++				if (sf->write_op(sf, SPI_4BAM, NULL,
++						 SPI_NO_ADDR, 0)) {
++					pr_err("Failed to set 4 byte mode\n");
++					return NULL;
++				}
++		}
++
++		/* Allocate and initialize mtd struct */
++
++		mtd = kzalloc(sizeof(struct mtd_info), GFP_KERNEL);
++		if (!mtd) {
++			kfree(sf->chip.priv);
++			return NULL;
++		}
++
++		mtd->priv         = sf;
++		mtd->type         = MTD_NORFLASH;
++		mtd->name         = cy_devinfo[i].name;
++		mtd->_erase       = cy_spi_erase;
++		mtd->_write       = cy_spi_write;
++		mtd->_read        = cy_spi_read;
++		mtd->_sync        = cy_spi_sync;
++		mtd->_suspend     = cy_spi_suspend;
++		mtd->_resume      = cy_spi_resume;
++		mtd->writebufsize = cy_devinfo[i].pagesize;
++
++		if (cy_devinfo[i].flags & HAS_ASP) {
++			mtd->_lock      = cy_spi_ppb_lock;
++			mtd->_unlock    = cy_spi_ppb_unlock;
++			mtd->_is_locked = cy_spi_ppb_is_locked;
++		}
++
++		mtd->size =
++		 cy_devinfo[i].numblocks[0] * cy_devinfo[i].erasesize[0] +
++		 cy_devinfo[i].numblocks[1] * cy_devinfo[i].erasesize[1];
++		mtd->erasesize =
++		 (cy_devinfo[i].erasesize[0] > cy_devinfo[i].erasesize[1] ?
++		  cy_devinfo[i].erasesize[0] : cy_devinfo[i].erasesize[1]);
++
++		/* Check CR3 options (if supported) */
++
++		if (cy_devinfo[i].flags & (HAS_DYN_PAGESIZE | HAS_DYN_SECSIZE |
++					   HAS_PARM_8X4K | HAS_PARM_32X4K)) {
++			if (get_confreg3v(mtd, &conf)) {
++				pr_err("Cannot read SPI flash config reg 3\n");
++				kfree(mtd);
++				kfree(sf->chip.priv);
++				return NULL;
++			}
++
++			/* Adjust dynamic page size if needed */
++
++			if ((cy_devinfo[i].flags & HAS_DYN_PAGESIZE) &&
++			    (mtd->writebufsize !=
++			     ((conf & 0x10) ? 512 : 256))) {
++				if (mtd->writebufsize == 512)
++					conf |= 0x10;
++				else
++					conf &= ~0x10;
++
++				if (set_confreg3v(mtd, conf)) {
++					pr_err("Cannot set config reg 3\n");
++					kfree(mtd);
++					kfree(sf->chip.priv);
++					return NULL;
++				}
++			}
++
++			/* Parameter sectors */
++
++			if ((cy_devinfo[i].flags &
++			     (HAS_PARM_8X4K | HAS_PARM_32X4K)) &&
++			    !(conf & 0x08)) {
++				parameter_sectors = 1;
++				if (cy_devinfo[i].flags & HAS_2DIES_1CS) {
++					pr_err("Uniform sectors required\n");
++					kfree(mtd);
++					kfree(sf->chip.priv);
++					return NULL;
++				}
++			}
++
++			/* Big sectors */
++
++			if ((cy_devinfo[i].flags & HAS_DYN_SECSIZE) &&
++			    (conf & 0x02)) {
++				big_sectors = 1;
++				mtd->erasesize <<= 2;
++			}
++		}
++
++		/* Check CR1 options */
++
++		if (cy_devinfo[i].flags & HAS_CONFREG) {
++			if (get_confreg1(mtd, &conf)) {
++				pr_err("Cannot read SPI flash config reg\n");
++				kfree(mtd);
++				kfree(sf->chip.priv);
++				return NULL;
++			}
++
++			if (cy_devinfo[i].flags & HAS_TBPARM)
++				top_boot = (conf >> 2) & 0x01;
++		}
++
++		/* Check if requested I/O mode is supported */
++
++		if (((sf->io_mode == SPI_DUAL_O     ||
++		      sf->io_mode == SPI_DUAL_IO    ||
++		      sf->io_mode == SPI_DUAL_O_HP  ||
++		      sf->io_mode == SPI_DUAL_IO_HP ||
++		      sf->io_mode == SPI_QUAD_O     ||
++		      sf->io_mode == SPI_QUAD_O_HP  ||
++		      sf->io_mode == SPI_QUAD_IO    ||
++		      sf->io_mode == SPI_QUAD_IO_HP) &&
++		     !(cy_devinfo[i].flags & HAS_MULTI_IO)) ||
++		    (sf->io_mode == SPI_OPI &&
++		     !(cy_devinfo[i].flags & HAS_OPI))) {
++			pr_err("Requested I/O mode not supported by device\n");
++			kfree(mtd);
++			kfree(sf->chip.priv);
++			return NULL;
++		}
++
++		/* Adjust CR1 to I/O mode (QUAD and MLC for FRAM), if needed */
++
++		if (cy_devinfo[i].flags & HAS_CONFREG &&
++		    cy_devinfo[i].flags & HAS_MULTI_IO) {
++			switch (sf->io_mode) {
++			case SPI_QUAD_IO_HP:
++			case SPI_QUAD_IO:
++			case SPI_QUAD_O_HP:
++			case SPI_QUAD_O:
++				if (!(conf & 0x02)) {
++					conf |= 0x02;  /* set QUAD */
++					set_cr1 = 1;
++				}
++				break;
++			case SPI_DUAL_IO_HP:
++			case SPI_DUAL_O_HP:
++			case SPI_DUAL_IO:
++			case SPI_DUAL_O:
++			case SPI_SINGLE_IO_FASTREAD:
++			case SPI_SINGLE_IO:
++				if (conf & 0x02) {
++					conf &= ~0x02;  /* clear QUAD */
++					set_cr1 = 1;
++				}
++				break;
++			default:
++				pr_err("Unsupported SPI I/O mode\n");
++				kfree(mtd);
++				kfree(sf->chip.priv);
++				return NULL;
++			}
++
++			if (cy_devinfo[i].flags & IS_FRAM)
++				switch (sf->io_mode) {
++				case SPI_QUAD_IO_HP:
++				case SPI_QUAD_IO:
++				case SPI_QUAD_O_HP:
++				case SPI_QUAD_O:
++				case SPI_DUAL_IO_HP:
++				case SPI_DUAL_O_HP:
++				case SPI_DUAL_IO:
++				case SPI_DUAL_O:
++					if ((conf & 0xF0) != 0x80) {
++						conf &= ~0xF0;
++						conf |= 0x80;  /* set 8 lc */
++						set_cr1 = 1;
++					}
++					break;
++				case SPI_SINGLE_IO_FASTREAD:
++				case SPI_SINGLE_IO:
++				default:
++					if (conf & 0xF0) {
++						conf &= ~0xF0; /* set 0 lc */
++						set_cr1 = 1;
++					}
++				}
++
++			if (set_cr1 && set_confreg1(mtd, conf)) {
++				pr_err("Error setting config reg 1\n");
++				kfree(mtd);
++				kfree(sf->chip.priv);
++				return NULL;
++			}
++		}
++
++		/* Setup mtd erase regions if needed */
++
++		if (cy_devinfo[i].flags & HAS_DYN_SECSIZE ||
++		    cy_devinfo[i].flags & (HAS_PARM_8X4K | HAS_PARM_32X4K)) {
++
++			if (parameter_sectors) {
++				mtd->numeraseregions = 3;
++				mtd->eraseregions =
++				 kmalloc(sizeof(struct mtd_erase_region_info) *
++					 3, GFP_KERNEL);
++				if (!mtd->eraseregions) {
++					kfree(mtd);
++					kfree(sf->chip.priv);
++					return NULL;
++				}
++
++				mtd->eraseregions[top_boot ? 2 : 0].erasesize =
++				 0x1000;
++				mtd->eraseregions[top_boot ? 2 : 0].numblocks =
++				 ((cy_devinfo[i].flags & HAS_PARM_32X4K) ?
++				  32 : 8);
++				mtd->eraseregions[1].erasesize =
++				 mtd->erasesize -
++				 ((cy_devinfo[i].flags & HAS_PARM_32X4K) ?
++				  0x20000 : 0x8000);
++				mtd->eraseregions[1].numblocks = 1;
++				mtd->eraseregions[top_boot ? 0 : 2].erasesize =
++				 mtd->erasesize;
++				mtd->eraseregions[top_boot ? 0 : 2].numblocks =
++				 (cy_devinfo[i].numblocks[0] >> (big_sectors ?
++								 2 : 0)) - 1;
++				mtd->eraseregions[0].offset = 0;
++				mtd->eraseregions[1].offset =
++				 mtd->eraseregions[0].erasesize *
++				 mtd->eraseregions[0].numblocks;
++				mtd->eraseregions[2].offset =
++				 mtd->eraseregions[1].offset +
++				 mtd->eraseregions[1].erasesize *
++				 mtd->eraseregions[1].numblocks;
++			}
++		} else {
++
++			if (cy_devinfo[i].numblocks[1]) {
++				mtd->numeraseregions = 2;
++				mtd->eraseregions =
++				 kmalloc(sizeof(struct mtd_erase_region_info) *
++					 2, GFP_KERNEL);
++				if (!mtd->eraseregions) {
++					kfree(mtd);
++					kfree(sf->chip.priv);
++					return NULL;
++				}
++				mtd->eraseregions[0 + top_boot].erasesize =
++				 cy_devinfo[i].erasesize[0];
++				mtd->eraseregions[0 + top_boot].numblocks =
++				 cy_devinfo[i].numblocks[0];
++				mtd->eraseregions[1 - top_boot].erasesize =
++				 cy_devinfo[i].erasesize[1];
++				mtd->eraseregions[1 - top_boot].numblocks =
++				 cy_devinfo[i].numblocks[1];
++				mtd->eraseregions[0].offset = 0;
++				mtd->eraseregions[1].offset =
++				 mtd->eraseregions[0].erasesize *
++				 mtd->eraseregions[0].numblocks;
++			}
++		}
++
++		/* Install OTP functions (we treat all regions as user blocks */
++
++		if (cy_devinfo[i].flags & HAS_OTP) {
++			mtd->_read_user_prot_reg  = cy_spi_otp_read;
++			mtd->_write_user_prot_reg = cy_spi_otp_write;
++			mtd->_get_user_prot_info  = cy_spi_otp_info;
++			mtd->_lock_user_prot_reg  = cy_spi_otp_lock;
++		}
++
++		pr_info("Found Cypress %s %s (%s%s%s)\n",
++			cy_devinfo[i].name,
++			cy_devinfo[i].flags & IS_FRAM ? "F-RAM" : "flash",
++			mtd->numeraseregions == 0 ? "uniform layout" :
++			(top_boot ? "top boot" : "bottom boot"),
++			sf->io_mode == SPI_OPI ? ", OPI" : "",
++			sf->vr_latency == 1 ? ", VRL1" :
++			(sf->vr_latency == 2 ? ", VRL2" : ""));
++
++		if (BUFFERED_WRITE_MODE == 2 ||
++		    (BUFFERED_WRITE_MODE == 1 &&
++		     (cy_devinfo[i].flags & HAS_ECC2))) {
++			pr_info("Enabling buffered JFFS2 mode, writesize=%d\n",
++				mtd->writebufsize);
++			mtd->writesize = mtd->writebufsize;
++			mtd->flags     = MTD_CAP_NORFLASH & ~MTD_BIT_WRITEABLE;
++		} else {
++			mtd->writesize = 1;
++			mtd->flags     = MTD_CAP_NORFLASH;
++			if (cy_devinfo[i].flags & HAS_ECC2)
++				if (clear_confreg4v_ecc2(mtd)) {
++					pr_err("Failed to set conf reg 4\n");
++					kfree(mtd);
++					kfree(sf->chip.priv);
++					return NULL;
++				}
++		}
++		return mtd;
++	}
++
++	if (sf->vr_latency < 2) {
++		sf->vr_latency++;
++		if (sf->io_mode == SPI_OPI) {
++			for (i = 0; i < sizeof(id_buf) - 1; i++)
++				id_buf[i] = id_buf[i + 1];
++		} else {
++			for (i = 0; i < sizeof(id_buf); i++) {
++				id_buf[i] <<= 1;
++				if (i < sizeof(id_buf) - 1)
++					id_buf[i] |= (id_buf[i + 1] >> 7);
++			}
++		}
++		goto retry;
++	}
++
++	kfree(sf->chip.priv);
++	return NULL;
++}
++EXPORT_SYMBOL_GPL(cy_spi_probe);
++
++
++/* ==============
++ * cy_spi_destroy
++ * ==============
++ */
++
++void cy_spi_destroy(struct mtd_info *mtd)
++{
++	struct cy_spi_flash *sf = (struct cy_spi_flash *)(mtd->priv);
++
++	kfree(mtd->eraseregions);
++	kfree(mtd);
++	kfree(sf->chip.priv);
++}
++EXPORT_SYMBOL_GPL(cy_spi_destroy);
++
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Cypress <gernot.hoyler@cypress.com>");
++MODULE_DESCRIPTION("MTD chip driver for Cypress SPI memory devices");
+diff -rupN linux-4.14.0/drivers/mtd/cy-snor/cy-snor-hal.c linux-4.14.0-cy-snor/drivers/mtd/cy-snor/cy-snor-hal.c
+--- linux-4.14.0/drivers/mtd/cy-snor/cy-snor-hal.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/mtd/cy-snor/cy-snor-hal.c	2019-05-23 15:41:56.612206402 +0200
+@@ -0,0 +1,413 @@
++/*
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
++ *
++ * Copyright 2009-2019 Cypress. All rights reserved.
++ *
++ * The contents of this file are subject to the terms of the GNU
++ * General Public License Version 2 only (the "License").
++ * You may not use this file except in compliance with the License.
++ * See the License for the specific language governing permissions
++ * and limitations under the License.
++ *
++ * If applicable, add the following below the License Header, with
++ * the fields enclosed by brackets [] replaced by your own identifying
++ * information: "Portions Copyrighted [year] [name of copyright owner]"
++ */
++
++
++/* Simple board/HAL driver that connects the Cypress SPI chip driver to the
++ * Linux SPI framework. Might be customized and integrated into a larger
++ * board driver that supports other devices, too.
++ */
++
++#include <linux/version.h>
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/mm.h>
++#include <linux/mtd/mtd.h>
++#include <linux/device.h>
++#include <linux/spi/spi.h>
++#include <linux/spi/flash.h>
++#include <linux/mtd/cy-snor.h>
++
++
++/* The following macro can be set to a fallback SPI driver, e.g. "m25p80".
++ * The probe function of that driver gets called if the Cypress driver does
++ * not detect a valid Cypress SPI device. Useful for 2nd source devices that
++ * require the standard SPI driver and might populate the same socket.
++ */
++
++#define FB_SPI_DRV ""
++
++
++/* HAL specific data, stored in the priv field of cy_spi_flash */
++
++struct hal_data {
++	struct spi_device *spi;        /* SPI device handle (back end) */
++	unsigned char header[30];      /* SPI message header buffer */
++};
++
++
++/* ===========
++ * cy_hal_read
++ * ===========
++ */
++
++static int cy_hal_read(struct cy_spi_flash *sf, unsigned char command,
++		       void *to, unsigned long from, size_t len)
++{
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	struct hal_data *hdat = sf->priv;
++	struct spi_message msg;
++	struct spi_transfer transfer[3] = {};
++	int i = 0, n, res = 0;
++
++	spi_message_init(&msg);
++
++	/*  Part 0: command */
++
++	if (sf->io_mode == SPI_OPI) {
++		hdat->header[i++] = command;
++		hdat->header[i++] = command;
++	} else if (command == SPI_DUAL_READ_HP ||
++		   command == SPI_QUAD_READ_HP) {
++		transfer[0].tx_buf = &command;
++		transfer[0].len = 1;
++		spi_message_add_tail(&transfer[0], &msg);
++	} else
++		hdat->header[i++] = command;
++
++	/* Part 1: address + mode/dummy bytes */
++
++	if (from != SPI_NO_ADDR) {
++		if ((flags & (ADDR32_BAR | ADDR32_4BAM)) ||
++		    sf->io_mode == SPI_OPI ||
++		    command == SPI_PPB_READ_4)
++			hdat->header[i++] = ((from >> 24) & 0xFF);
++		hdat->header[i++] = ((from >> 16) & 0xFF);
++		hdat->header[i++] = ((from >>  8) & 0xFF);
++		hdat->header[i++] = ((from)       & 0xFF);
++	}
++
++	switch (command) {
++	case SPI_READ_ID:
++	case SPI_READ_STATUS:
++		if (sf->io_mode == SPI_OPI) {
++			hdat->header[i++] = 0;  /* dummy */
++			hdat->header[i++] = 0;  /* dummy */
++			hdat->header[i++] = 0;  /* dummy */
++		}
++		break;
++	case SPI_READ_ANY_REG:
++		if (sf->io_mode == SPI_OPI) {
++			hdat->header[i++] = 0;  /* dummy */
++			hdat->header[i++] = 0;  /* dummy */
++			for (n = 0; n < sf->vr_latency; n++)
++				hdat->header[i++] = 0;  /* dummy */
++		}
++		hdat->header[i++] = 0;  /* dummy */
++		break;
++	case SPI_FAST_READ:
++	case SPI_DUAL_READ:
++	case SPI_QUAD_READ:
++	case SPI_OTP_READ:
++		hdat->header[i++] = 0;  /* dummy */
++		break;
++	case SPI_DUAL_READ_HP:
++		hdat->header[i++] = 0;  /* mode byte */
++		hdat->header[i++] = 0;  /* dummy */
++		hdat->header[i++] = 0;  /* dummy */
++		break;
++	case SPI_QUAD_READ_HP:
++	case SPI_QUAD_READ_HP_4:
++		for (n = 0; n < (sf->io_mode == SPI_OPI ? 20 : 5); n++)
++			hdat->header[i++] = 0;  /* 20x/4+1x (OPI/Quad) */
++		break;
++	case SPI_PPB_READ_4:
++		for (n = 0; n < (sf->io_mode == SPI_OPI ? 20 : 1); n++)
++			hdat->header[i++] = 0;  /* 20x/1x (OPI/SPI) */
++	}
++
++	if (i > 0) {
++		if (sf->io_mode == SPI_OPI)
++			transfer[1].tx_nbits = SPI_NBITS_OCTAL;
++		else
++			switch (command) {
++			case SPI_DUAL_READ_HP:
++				transfer[1].tx_nbits = SPI_NBITS_DUAL;
++				break;
++			case SPI_QUAD_READ_HP:
++				transfer[1].tx_nbits = SPI_NBITS_QUAD;
++			}
++		transfer[1].tx_buf = hdat->header;
++		transfer[1].len = i;
++		spi_message_add_tail(&transfer[1], &msg);
++	}
++
++	/* Part 2: data to be read */
++
++	if (sf->io_mode == SPI_OPI)
++		transfer[2].rx_nbits = SPI_NBITS_OCTAL;
++	else
++		switch (command) {
++		case SPI_DUAL_READ:
++		case SPI_DUAL_READ_HP:
++			transfer[2].rx_nbits = SPI_NBITS_DUAL;
++			break;
++		case SPI_QUAD_READ:
++		case SPI_QUAD_READ_HP:
++			transfer[2].rx_nbits = SPI_NBITS_QUAD;
++		}
++	transfer[2].rx_buf = to;
++	transfer[2].len = len;
++	spi_message_add_tail(&transfer[2], &msg);
++
++	res = spi_sync(hdat->spi, &msg);
++	if (res)
++		pr_err("spi_sync() returned error %d\n", res);
++
++	if (command == SPI_READ_ANY_REG &&
++	    sf->vr_latency && sf->io_mode != SPI_OPI &&
++	    (from >= AR_SR1V || flags & IS_FRAM))
++		*(unsigned char *)to =
++		 (*(unsigned char *)to >> (8 - sf->vr_latency)) |
++		 (*(unsigned char *)to << sf->vr_latency);
++
++	return res;
++}
++
++
++/* ============
++ * cy_hal_write
++ * ============
++ */
++
++static int cy_hal_write(struct cy_spi_flash *sf, unsigned char command,
++			const void *from, unsigned long to, size_t len)
++{
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	struct hal_data *hdat = sf->priv;
++	struct spi_message msg;
++	struct spi_transfer transfer[3] = {};
++	int i = 0, res = 0;
++
++	spi_message_init(&msg);
++
++	/*  Part 0: command */
++
++	if (sf->io_mode == SPI_OPI) {
++		hdat->header[i++] = command;
++		hdat->header[i++] = command;
++	} else if (command == SPI_DUAL_PROGRAM_HP ||
++		   command == SPI_QUAD_PROGRAM_HP) {
++		transfer[0].tx_buf = &command;
++		transfer[0].len = 1;
++		spi_message_add_tail(&transfer[0], &msg);
++	} else
++		hdat->header[i++] = command;
++
++	/* Part 1: address + mode/dummy bytes */
++
++	if (to != SPI_NO_ADDR) {
++		if ((flags & (ADDR32_BAR | ADDR32_4BAM)) ||
++		    sf->io_mode == SPI_OPI ||
++		    command == SPI_PPB_PROG_4)
++			hdat->header[i++] = ((to >> 24) & 0xFF);
++		hdat->header[i++] = ((to >> 16) & 0xFF);
++		hdat->header[i++] = ((to >>  8) & 0xFF);
++		hdat->header[i++] = ((to)       & 0xFF);
++	}
++
++	if ((flags & IS_FRAM) &&
++	    (command == SPI_DUAL_PROGRAM ||
++	     command == SPI_DUAL_PROGRAM_HP ||
++	     command == SPI_QUAD_PROGRAM ||
++	     command == SPI_QUAD_PROGRAM_HP))
++		hdat->header[i++] = 0;  /* mode byte */
++
++	if (i > 0) {
++		if (sf->io_mode == SPI_OPI)
++			transfer[1].tx_nbits = SPI_NBITS_OCTAL;
++		else
++			switch (command) {
++			case SPI_DUAL_PROGRAM_HP:
++				transfer[1].tx_nbits = SPI_NBITS_DUAL;
++				break;
++			case SPI_QUAD_PROGRAM_HP:
++				transfer[1].tx_nbits = SPI_NBITS_QUAD;
++			}
++		transfer[1].tx_buf = hdat->header;
++		transfer[1].len = i;
++		spi_message_add_tail(&transfer[1], &msg);
++	}
++	/* Part 2: data to be written */
++
++	if (sf->io_mode == SPI_OPI)
++		transfer[2].tx_nbits = SPI_NBITS_OCTAL;
++	else
++		switch (command) {
++		case SPI_DUAL_PROGRAM:
++		case SPI_DUAL_PROGRAM_HP:
++			transfer[2].rx_nbits = SPI_NBITS_DUAL;
++			break;
++		case SPI_QUAD_PROGRAM:
++		case SPI_QUAD_PROGRAM_HP:
++			transfer[2].tx_nbits = SPI_NBITS_QUAD;
++		}
++	transfer[2].tx_buf = from;
++	transfer[2].len = len;
++	spi_message_add_tail(&transfer[2], &msg);
++
++	res = spi_sync(hdat->spi, &msg);
++	if (res < 0)
++		pr_err("spi_sync() returned error %d\n", res);
++	return res;
++}
++
++
++//  ============
++//  cy_hal_probe
++//  ============
++
++static int cy_hal_probe(struct spi_device *spi)
++{
++	struct flash_platform_data *platform;
++	struct cy_spi_flash *sf;
++	struct hal_data *hdat;
++	struct mtd_info *mtd;
++	struct spi_driver* fb_drv;
++
++	if (spi_get_drvdata(spi)) {
++		pr_err("SPI device already initialized\n");
++		return -ENODEV;
++	}
++
++	platform = dev_get_platdata(&spi->dev);
++
++	/* Allocate and initialize HAL data and SPI flash structs */
++
++	hdat = kzalloc(sizeof(struct hal_data), GFP_KERNEL);
++	if (!hdat)
++		return -ENOMEM;
++
++	hdat->spi = spi;
++
++	sf = kzalloc(sizeof(struct cy_spi_flash), GFP_KERNEL);
++	if (!sf)
++		return -ENOMEM;
++
++	if ((spi->mode & SPI_RX_OCTAL) &&                 /* Octal IO */
++	    (spi->mode & SPI_TX_OCTAL))
++		sf->io_mode = SPI_OPI;
++	else if (spi->mode & SPI_RX_QUAD) {               /* Quad IO */
++		if (spi->mode & SPI_TX_QUAD)
++			sf->io_mode = SPI_QUAD_IO_HP;
++		else {
++			sf->io_mode = SPI_QUAD_O_HP;
++			spi->mode |= SPI_TX_QUAD; /* -> SPI framework check */
++		}
++	} else if (spi->mode & SPI_RX_DUAL) {             /* Dual IO */
++		if (spi->mode & SPI_TX_DUAL)
++			sf->io_mode = SPI_DUAL_IO_HP;
++		else {
++			sf->io_mode = SPI_DUAL_O_HP;
++			spi->mode |= SPI_TX_DUAL; /* -> SPI framework check */
++		}
++	} else                                            /* Single IO */
++		sf->io_mode = SPI_SINGLE_IO_FASTREAD;
++
++	sf->read_op = cy_hal_read;
++	sf->write_op = cy_hal_write;
++	sf->priv = hdat;
++
++	/* Probe for a known Cypress SPI device */
++
++	mtd = cy_spi_probe(sf);
++	if (mtd) {
++		mtd->owner = THIS_MODULE;
++		mtd_set_of_node(mtd, spi->dev.of_node);
++		spi_set_drvdata(spi, mtd);
++		mtd_device_register(mtd, platform ? platform->parts : NULL,
++				    platform ? platform->nr_parts : 0);
++		return 0;
++	}
++
++	kfree(sf);
++	kfree(hdat);
++
++	/* No Cypress SPI device found, let the fallback driver check */
++
++	fb_drv = to_spi_driver(driver_find(FB_SPI_DRV, &spi_bus_type));
++	if (fb_drv) {
++		strcpy(spi->modalias, FB_SPI_DRV);
++		return fb_drv->probe(spi);
++	}
++
++	pr_err("Cypress SPI flash probing failed\n");
++	return -ENODEV;
++}
++
++
++/* =============
++ * cy_hal_remove
++ * =============
++ */
++
++static int cy_hal_remove(struct spi_device *spi)
++{
++	struct mtd_info *mtd = spi_get_drvdata(spi);
++	struct cy_spi_flash *sf;
++	struct spi_driver* fb_drv;
++
++	/* If the fallback driver is in charge let it clean things up */
++
++	fb_drv = to_spi_driver(driver_find(FB_SPI_DRV, &spi_bus_type));
++	if (fb_drv && strcmp(spi->modalias, FB_SPI_DRV) == 0)
++		return fb_drv->remove(spi);
++
++	/* Cypress driver cleanup */
++
++	if (mtd) {
++		sf = mtd->priv;
++
++		mtd_device_unregister(mtd);
++		cy_spi_destroy(mtd);
++		spi_set_drvdata(spi, NULL);
++
++		if (sf) {
++			kfree(sf->priv);
++			kfree(sf);
++		}
++	}
++	return 0;
++}
++
++
++static const struct spi_device_id cy_snor_ids[] = { { "cy-snor", 0 }, { } };
++MODULE_DEVICE_TABLE(spi, cy_snor_ids);
++
++
++static const struct of_device_id cy_snor_of_table[] = {
++	{ .compatible = "cy-snor" }, { } };
++MODULE_DEVICE_TABLE(of, cy_snor_of_table);
++
++
++static struct spi_driver cy_snor_driver = {
++	.driver = {
++		.name = "cy-snor",
++		.bus = &spi_bus_type,
++		.owner = THIS_MODULE,
++		.of_match_table = cy_snor_of_table,
++	},
++	.id_table = cy_snor_ids,
++	.probe = cy_hal_probe,
++	.remove = cy_hal_remove,
++};
++
++
++module_spi_driver(cy_snor_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Cypress <gernot.hoyler@cypress.com>");
++MODULE_DESCRIPTION("Cypress SPI HAL interface to the SPI framework");
+diff -rupN linux-4.14.0/drivers/mtd/cy-snor/cy-snor-flexspi.c linux-4.14.0-cy-snor/drivers/mtd/cy-snor/cy-snor-flexspi.c
+--- linux-4.14.0/drivers/mtd/cy-snor/cy-snor-flexspi.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.14.0-cy-snor/drivers/mtd/cy-snor/cy-snor-flexspi.c	2019-05-28 10:32:46.315612582 +0200
+@@ -0,0 +1,1534 @@
++/*
++ * Freescale FlexSPI driver.
++ *
++ * Copyright 2017 NXP
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ *
++ * Modifications:
++ *
++ * Copyright 2019 Cypress
++ *
++ * Derived from NXP's fsl-flexspi.c (4.14.98-2.0.0_ga relase).
++ * LUT and chip driver API modified for the Cypress driver stack.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/interrupt.h>
++#include <linux/errno.h>
++#include <linux/platform_device.h>
++#include <linux/sched.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <linux/err.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/timer.h>
++#include <linux/jiffies.h>
++#include <linux/completion.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/partitions.h>
++#include <linux/mtd/cy-snor.h>
++#include <linux/mutex.h>
++#include <linux/pm_qos.h>
++#include <linux/pci.h>
++#include <linux/pm_runtime.h>
++
++/* Board only enabled up to Quad mode, not Octal*/
++#define FLEXSPI_QUIRK_QUAD_ONLY		(1 << 0)
++/* Maximum clock limitation */
++#define FLEXSPI_QUIRK_FREQ_LIMIT	(1 << 1)
++/* Config DLL register */
++#define FLEXSPI_QUIRK_CONFIG_DLL	(1 << 2)
++
++/* runtime pm timeout */
++#define FSL_FLEXSPI_RPM_TIMEOUT 50 /* 50ms */
++#define FREQ_1MHz               1000000 /* 1MHz */
++
++/* delay cell range */
++#define FLEXSPI_DLL_MIN		75 /* 75ps */
++#define FLEXSPI_DLL_MAX		225 /* 225ps */
++
++/* The registers */
++#define FLEXSPI_MCR0			0x00
++#define FLEXSPI_MCR0_AHB_TIMEOUT_SHIFT	24
++#define FLEXSPI_MCR0_AHB_TIMEOUT_MASK	(0xFF << FLEXSPI_MCR0_AHB_TIMEOUT_SHIFT)
++#define FLEXSPI_MCR0_IP_TIMEOUT_SHIFT	16
++#define FLEXSPI_MCR0_IP_TIMEOUT_MASK	(0xFF << FLEXSPI_MCR0_IP_TIMEOUT_SHIFT)
++#define FLEXSPI_MCR0_LEARN_EN_SHIFT	15
++#define FLEXSPI_MCR0_LEARN_EN_MASK	(1 << FLEXSPI_MCR0_LEARN_EN_SHIFT)
++#define FLEXSPI_MCR0_SCRFRUN_EN_SHIFT	14
++#define FLEXSPI_MCR0_SCRFRUN_EN_MASK	(1 << FLEXSPI_MCR0_SCRFRUN_EN_SHIFT)
++#define FLEXSPI_MCR0_OCTCOMB_EN_SHIFT	13
++#define FLEXSPI_MCR0_OCTCOMB_EN_MASK	(1 << FLEXSPI_MCR0_OCTCOMB_EN_SHIFT)
++#define FLEXSPI_MCR0_DOZE_EN_SHIFT	12
++#define FLEXSPI_MCR0_DOZE_EN_MASK	(1 << FLEXSPI_MCR0_DOZE_EN_SHIFT)
++#define FLEXSPI_MCR0_HSEN_SHIFT		11
++#define FLEXSPI_MCR0_HSEN_MASK		(1 << FLEXSPI_MCR0_HSEN_SHIFT)
++#define FLEXSPI_MCR0_SERCLKDIV_SHIFT	8
++#define FLEXSPI_MCR0_SERCLKDIV_MASK	(7 << FLEXSPI_MCR0_SERCLKDIV_SHIFT)
++#define FLEXSPI_MCR0_ATDF_EN_SHIFT	7
++#define FLEXSPI_MCR0_ATDF_EN_MASK	(1 << FLEXSPI_MCR0_ATDF_EN_SHIFT)
++#define FLEXSPI_MCR0_ARDF_EN_SHIFT	6
++#define FLEXSPI_MCR0_ARDF_EN_MASK	(1 << FLEXSPI_MCR0_ARDF_EN_SHIFT)
++#define FLEXSPI_MCR0_RXCLKSRC_SHIFT	4
++#define FLEXSPI_MCR0_RXCLKSRC_MASK	(3 << FLEXSPI_MCR0_RXCLKSRC_SHIFT)
++#define FLEXSPI_MCR0_END_CFG_SHIFT	2
++#define FLEXSPI_MCR0_END_CFG_MASK	(3 << FLEXSPI_MCR0_END_CFG_SHIFT)
++#define FLEXSPI_MCR0_MDIS_SHIFT		1
++#define FLEXSPI_MCR0_MDIS_MASK		(1 << FLEXSPI_MCR0_MDIS_SHIFT)
++#define FLEXSPI_MCR0_SWRST_SHIFT	0
++#define FLEXSPI_MCR0_SWRST_MASK		(1 << FLEXSPI_MCR0_SWRST_SHIFT)
++
++#define FLEXSPI_MCR1			0x04
++#define FLEXSPI_MCR1_SEQ_TIMEOUT_SHIFT	16
++#define FLEXSPI_MCR1_SEQ_TIMEOUT_MASK	\
++	(0xFFFF << FLEXSPI_MCR1_SEQ_TIMEOUT_SHIFT)
++#define FLEXSPI_MCR1_AHB_TIMEOUT_SHIFT	0
++#define FLEXSPI_MCR1_AHB_TIMEOUT_MASK	\
++	(0xFFFF << FLEXSPI_MCR1_AHB_TIMEOUT_SHIFT)
++
++#define FLEXSPI_MCR2			0x08
++#define FLEXSPI_MCR2_IDLE_WAIT_SHIFT	24
++#define FLEXSPI_MCR2_IDLE_WAIT_MASK	(0xFF << FLEXSPI_MCR2_IDLE_WAIT_SHIFT)
++#define FLEXSPI_MCR2_SAMEFLASH_SHIFT	15
++#define FLEXSPI_MCR2_SAMEFLASH_MASK	(1 << FLEXSPI_MCR2_SAMEFLASH_SHIFT)
++#define FLEXSPI_MCR2_CLRLRPHS_SHIFT	14
++#define FLEXSPI_MCR2_CLRLRPHS_MASK	(1 << FLEXSPI_MCR2_CLRLRPHS_SHIFT)
++#define FLEXSPI_MCR2_ABRDATSZ_SHIFT	8
++#define FLEXSPI_MCR2_ABRDATSZ_MASK	(1 << FLEXSPI_MCR2_ABRDATSZ_SHIFT)
++#define FLEXSPI_MCR2_ABRLEARN_SHIFT	7
++#define FLEXSPI_MCR2_ABRLEARN_MASK	(1 << FLEXSPI_MCR2_ABRLEARN_SHIFT)
++#define FLEXSPI_MCR2_ABR_READ_SHIFT	6
++#define FLEXSPI_MCR2_ABR_READ_MASK	(1 << FLEXSPI_MCR2_ABR_READ_SHIFT)
++#define FLEXSPI_MCR2_ABRWRITE_SHIFT	5
++#define FLEXSPI_MCR2_ABRWRITE_MASK	(1 << FLEXSPI_MCR2_ABRWRITE_SHIFT)
++#define FLEXSPI_MCR2_ABRDUMMY_SHIFT	4
++#define FLEXSPI_MCR2_ABRDUMMY_MASK	(1 << FLEXSPI_MCR2_ABRDUMMY_SHIFT)
++#define FLEXSPI_MCR2_ABR_MODE_SHIFT	3
++#define FLEXSPI_MCR2_ABR_MODE_MASK	(1 << FLEXSPI_MCR2_ABR_MODE_SHIFT)
++#define FLEXSPI_MCR2_ABRCADDR_SHIFT	2
++#define FLEXSPI_MCR2_ABRCADDR_MASK	(1 << FLEXSPI_MCR2_ABRCADDR_SHIFT)
++#define FLEXSPI_MCR2_ABRRADDR_SHIFT	1
++#define FLEXSPI_MCR2_ABRRADDR_MASK	(1 << FLEXSPI_MCR2_ABRRADDR_SHIFT)
++#define FLEXSPI_MCR2_ABR_CMD_SHIFT	0
++#define FLEXSPI_MCR2_ABR_CMD_MASK	(1 << FLEXSPI_MCR2_ABR_CMD_SHIFT)
++
++#define FLEXSPI_AHBCR			0x0c
++#define FLEXSPI_AHBCR_RDADDROPT_SHIFT	6
++#define FLEXSPI_AHBCR_RDADDROPT_MASK	(1 << FLEXSPI_AHBCR_RDADDROPT_SHIFT)
++#define FLEXSPI_AHBCR_PREF_EN_SHIFT	5
++#define FLEXSPI_AHBCR_PREF_EN_MASK	(1 << FLEXSPI_AHBCR_PREF_EN_SHIFT)
++#define FLEXSPI_AHBCR_BUFF_EN_SHIFT	4
++#define FLEXSPI_AHBCR_BUFF_EN_MASK	(1 << FLEXSPI_AHBCR_BUFF_EN_SHIFT)
++#define FLEXSPI_AHBCR_CACH_EN_SHIFT	3
++#define FLEXSPI_AHBCR_CACH_EN_MASK	(1 << FLEXSPI_AHBCR_CACH_EN_SHIFT)
++#define FLEXSPI_AHBCR_CLRTXBUF_SHIFT	2
++#define FLEXSPI_AHBCR_CLRTXBUF_MASK	(1 << FLEXSPI_AHBCR_CLRTXBUF_SHIFT)
++#define FLEXSPI_AHBCR_CLRRXBUF_SHIFT	1
++#define FLEXSPI_AHBCR_CLRRXBUF_MASK	(1 << FLEXSPI_AHBCR_CLRRXBUF_SHIFT)
++#define FLEXSPI_AHBCR_PAR_EN_SHIFT	0
++#define FLEXSPI_AHBCR_PAR_EN_MASK	(1 << FLEXSPI_AHBCR_PAR_EN_SHIFT)
++
++#define FLEXSPI_INTEN			0x10
++#define FLEXSPI_INTEN_SCLKSBWR_SHIFT	9
++#define FLEXSPI_INTEN_SCLKSBWR_MASK	(1 << FLEXSPI_INTEN_SCLKSBWR_SHIFT)
++#define FLEXSPI_INTEN_SCLKSBRD_SHIFT	8
++#define FLEXSPI_INTEN_SCLKSBRD_MASK	(1 << FLEXSPI_INTEN_SCLKSBRD_SHIFT)
++#define FLEXSPI_INTEN_DATALRNFL_SHIFT	7
++#define FLEXSPI_INTEN_DATALRNFL_MASK	(1 << FLEXSPI_INTEN_DATALRNFL_SHIFT)
++#define FLEXSPI_INTEN_IPTXWE_SHIFT	6
++#define FLEXSPI_INTEN_IPTXWE_MASK	(1 << FLEXSPI_INTEN_IPTXWE_SHIFT)
++#define FLEXSPI_INTEN_IPRXWA_SHIFT	5
++#define FLEXSPI_INTEN_IPRXWA_MASK	(1 << FLEXSPI_INTEN_IPRXWA_SHIFT)
++#define FLEXSPI_INTEN_AHBCMDERR_SHIFT	4
++#define FLEXSPI_INTEN_AHBCMDERR_MASK	(1 << FLEXSPI_INTEN_AHBCMDERR_SHIFT)
++#define FLEXSPI_INTEN_IPCMDERR_SHIFT	3
++#define FLEXSPI_INTEN_IPCMDERR_MASK	(1 << FLEXSPI_INTEN_IPCMDERR_SHIFT)
++#define FLEXSPI_INTEN_AHBCMDGE_SHIFT	2
++#define FLEXSPI_INTEN_AHBCMDGE_MASK	(1 << FLEXSPI_INTEN_AHBCMDGE_SHIFT)
++#define FLEXSPI_INTEN_IPCMDGE_SHIFT	1
++#define FLEXSPI_INTEN_IPCMDGE_MASK	(1 << FLEXSPI_INTEN_IPCMDGE_SHIFT)
++#define FLEXSPI_INTEN_IPCMDDONE_SHIFT	0
++#define FLEXSPI_INTEN_IPCMDDONE_MASK	(1 << FLEXSPI_INTEN_IPCMDDONE_SHIFT)
++
++#define FLEXSPI_INTR			0x14
++#define FLEXSPI_INTR_SCLKSBWR_SHIFT	9
++#define FLEXSPI_INTR_SCLKSBWR_MASK	(1 << FLEXSPI_INTR_SCLKSBWR_SHIFT)
++#define FLEXSPI_INTR_SCLKSBRD_SHIFT	8
++#define FLEXSPI_INTR_SCLKSBRD_MASK	(1 << FLEXSPI_INTR_SCLKSBRD_SHIFT)
++#define FLEXSPI_INTR_DATALRNFL_SHIFT	7
++#define FLEXSPI_INTR_DATALRNFL_MASK	(1 << FLEXSPI_INTR_DATALRNFL_SHIFT)
++#define FLEXSPI_INTR_IPTXWE_SHIFT	6
++#define FLEXSPI_INTR_IPTXWE_MASK	(1 << FLEXSPI_INTR_IPTXWE_SHIFT)
++#define FLEXSPI_INTR_IPRXWA_SHIFT	5
++#define FLEXSPI_INTR_IPRXWA_MASK	(1 << FLEXSPI_INTR_IPRXWA_SHIFT)
++#define FLEXSPI_INTR_AHBCMDERR_SHIFT	4
++#define FLEXSPI_INTR_AHBCMDERR_MASK	(1 << FLEXSPI_INTR_AHBCMDERR_SHIFT)
++#define FLEXSPI_INTR_IPCMDERR_SHIFT	3
++#define FLEXSPI_INTR_IPCMDERR_MASK	(1 << FLEXSPI_INTR_IPCMDERR_SHIFT)
++#define FLEXSPI_INTR_AHBCMDGE_SHIFT	2
++#define FLEXSPI_INTR_AHBCMDGE_MASK	(1 << FLEXSPI_INTR_AHBCMDGE_SHIFT)
++#define FLEXSPI_INTR_IPCMDGE_SHIFT	1
++#define FLEXSPI_INTR_IPCMDGE_MASK	(1 << FLEXSPI_INTR_IPCMDGE_SHIFT)
++#define FLEXSPI_INTR_IPCMDDONE_SHIFT	0
++#define FLEXSPI_INTR_IPCMDDONE_MASK	(1 << FLEXSPI_INTR_IPCMDDONE_SHIFT)
++
++#define FLEXSPI_LUTKEY			0x18
++#define FLEXSPI_LUTKEY_VALUE		0x5AF05AF0
++
++#define FLEXSPI_LCKCR			0x1C
++#define FLEXSPI_LCKER_LOCK		0x1
++#define FLEXSPI_LCKER_UNLOCK		0x2
++
++#define FLEXSPI_BUFXCR_INVALID_MSTRID	0xe
++#define FLEXSPI_AHBRX_BUF0CR0		0x20
++#define FLEXSPI_AHBRX_BUF1CR0		0x24
++#define FLEXSPI_AHBRX_BUF2CR0		0x28
++#define FLEXSPI_AHBRX_BUF3CR0		0x2C
++#define FLEXSPI_AHBRX_BUF4CR0		0x30
++#define FLEXSPI_AHBRX_BUF5CR0		0x34
++#define FLEXSPI_AHBRX_BUF6CR0		0x38
++#define FLEXSPI_AHBRX_BUF7CR0		0x3C
++#define FLEXSPI_AHBRXBUF0CR7_PREF_SHIFT	31
++#define FLEXSPI_AHBRXBUF0CR7_PREF_MASK	(1 << FLEXSPI_AHBRXBUF0CR7_PREF_SHIFT)
++
++#define FLEXSPI_AHBRX_BUF0CR1		0x40
++#define FLEXSPI_AHBRX_BUF1CR1		0x44
++#define FLEXSPI_AHBRX_BUF2CR1		0x48
++#define FLEXSPI_AHBRX_BUF3CR1		0x4C
++#define FLEXSPI_AHBRX_BUF4CR1		0x50
++#define FLEXSPI_AHBRX_BUF5CR1		0x54
++#define FLEXSPI_AHBRX_BUF6CR1		0x58
++#define FLEXSPI_AHBRX_BUF7CR1		0x5C
++#define FLEXSPI_BUFXCR1_MSID_SHIFT	0
++#define FLEXSPI_BUFXCR1_MSID_MASK	(0xF << FLEXSPI_BUFXCR1_MSID_SHIFT)
++#define FLEXSPI_BUFXCR1_PRIO_SHIFT	8
++#define FLEXSPI_BUFXCR1_PRIO_MASK	(0x7 << FLEXSPI_BUFXCR1_PRIO_SHIFT)
++
++#define FLEXSPI_FLSHA1CR0		0x60
++#define FLEXSPI_FLSHA2CR0		0x64
++#define FLEXSPI_FLSHB1CR0		0x68
++#define FLEXSPI_FLSHB2CR0		0x6C
++#define FLEXSPI_FLSHXCR0_SZ_SHIFT	10
++#define FLEXSPI_FLSHXCR0_SZ_MASK	(0x3FFFFF << FLEXSPI_FLSHXCR0_SZ_SHIFT)
++
++#define FLEXSPI_FLSHA1CR1		0x70
++#define FLEXSPI_FLSHA2CR1		0x74
++#define FLEXSPI_FLSHB1CR1		0x78
++#define FLEXSPI_FLSHB2CR1		0x7C
++#define FLEXSPI_FLSHXCR1_CSINTR_SHIFT	16
++#define FLEXSPI_FLSHXCR1_CSINTR_MASK	\
++	(0xFFFF << FLEXSPI_FLSHXCR1_CSINTR_SHIFT)
++#define FLEXSPI_FLSHXCR1_CAS_SHIFT	11
++#define FLEXSPI_FLSHXCR1_CAS_MASK	(0xF << FLEXSPI_FLSHXCR1_CAS_SHIFT)
++#define FLEXSPI_FLSHXCR1_WA_SHIFT	10
++#define FLEXSPI_FLSHXCR1_WA_MASK	(1 << FLEXSPI_FLSHXCR1_WA_SHIFT)
++#define FLEXSPI_FLSHXCR1_TCSH_SHIFT	5
++#define FLEXSPI_FLSHXCR1_TCSH_MASK	(0x1F << FLEXSPI_FLSHXCR1_TCSH_SHIFT)
++#define FLEXSPI_FLSHXCR1_TCSS_SHIFT	0
++#define FLEXSPI_FLSHXCR1_TCSS_MASK	(0x1F << FLEXSPI_FLSHXCR1_TCSS_SHIFT)
++
++#define FLEXSPI_FLSHA1CR2		0x80
++#define FLEXSPI_FLSHA2CR2		0x84
++#define FLEXSPI_FLSHB1CR2		0x88
++#define FLEXSPI_FLSHB2CR2		0x8C
++#define FLEXSPI_FLSHXCR2_CLRINSP_SHIFT	24
++#define FLEXSPI_FLSHXCR2_CLRINSP_MASK	(1 << FLEXSPI_FLSHXCR2_CLRINSP_SHIFT)
++#define FLEXSPI_FLSHXCR2_AWRWAIT_SHIFT	16
++#define FLEXSPI_FLSHXCR2_AWRWAIT_MASK	(0xFF << FLEXSPI_FLSHXCR2_AWRWAIT_SHIFT)
++#define FLEXSPI_FLSHXCR2_AWRSEQN_SHIFT	13
++#define FLEXSPI_FLSHXCR2_AWRSEQN_MASK	(0x7 << FLEXSPI_FLSHXCR2_AWRSEQN_SHIFT)
++#define FLEXSPI_FLSHXCR2_AWRSEQI_SHIFT	8
++#define FLEXSPI_FLSHXCR2_AWRSEQI_MASK	(0xF << FLEXSPI_FLSHXCR2_AWRSEQI_SHIFT)
++#define FLEXSPI_FLSHXCR2_ARDSEQN_SHIFT	5
++#define FLEXSPI_FLSHXCR2_ARDSEQN_MASK	(0x7 << FLEXSPI_FLSHXCR2_ARDSEQN_SHIFT)
++#define FLEXSPI_FLSHXCR2_ARDSEQI_SHIFT	0
++#define FLEXSPI_FLSHXCR2_ARDSEQI_MASK	(0xF << FLEXSPI_FLSHXCR2_ARDSEQI_SHIFT)
++
++#define FLEXSPI_IPCR0			0xA0
++
++#define FLEXSPI_IPCR1			0xA4
++#define FLEXSPI_IPCR1_IPAREN_SHIFT	31
++#define FLEXSPI_IPCR1_IPAREN_MASK	(1 << FLEXSPI_IPCR1_IPAREN_SHIFT)
++#define FLEXSPI_IPCR1_SEQNUM_SHIFT	24
++#define FLEXSPI_IPCR1_SEQNUM_MASK	(0xF << FLEXSPI_IPCR1_SEQNUM_SHIFT)
++#define FLEXSPI_IPCR1_SEQID_SHIFT	16
++#define FLEXSPI_IPCR1_SEQID_MASK	(0xF << FLEXSPI_IPCR1_SEQID_SHIFT)
++#define FLEXSPI_IPCR1_IDATSZ_SHIFT	0
++#define FLEXSPI_IPCR1_IDATSZ_MASK	(0xFFFF << FLEXSPI_IPCR1_IDATSZ_SHIFT)
++
++#define FLEXSPI_IPCMD			0xB0
++#define FLEXSPI_IPCMD_TRG_SHIFT		0
++#define FLEXSPI_IPCMD_TRG_MASK		(1 << FLEXSPI_IPCMD_TRG_SHIFT)
++
++#define FLEXSPI_DLPR			0xB4
++
++#define FLEXSPI_IPRXFCR			0xB8
++#define FLEXSPI_IPRXFCR_CLR_SHIFT	0
++#define FLEXSPI_IPRXFCR_CLR_MASK	(1 << FLEXSPI_IPRXFCR_CLR_SHIFT)
++#define FLEXSPI_IPRXFCR_DMA_EN_SHIFT	1
++#define FLEXSPI_IPRXFCR_DMA_EN_MASK	(1 << FLEXSPI_IPRXFCR_DMA_EN_SHIFT)
++#define FLEXSPI_IPRXFCR_WMRK_SHIFT	2
++#define FLEXSPI_IPRXFCR_WMRK_MASK	(0x1F << FLEXSPI_IPRXFCR_WMRK_SHIFT)
++
++#define FLEXSPI_IPTXFCR			0xBC
++#define FLEXSPI_IPTXFCR_CLR_SHIFT	0
++#define FLEXSPI_IPTXFCR_CLR_MASK	(1 << FLEXSPI_IPTXFCR_CLR_SHIFT)
++#define FLEXSPI_IPTXFCR_DMA_EN_SHIFT	1
++#define FLEXSPI_IPTXFCR_DMA_EN_MASK	(1 << FLEXSPI_IPTXFCR_DMA_EN_SHIFT)
++#define FLEXSPI_IPTXFCR_WMRK_SHIFT	2
++#define FLEXSPI_IPTXFCR_WMRK_MASK	(0x1F << FLEXSPI_IPTXFCR_WMRK_SHIFT)
++
++#define FLEXSPI_DLLACR			0xC0
++#define FLEXSPI_DLLACR_REFUPDINT_SHIFT	28
++#define FLEXSPI_DLLACR_REFUPDINT_MASK	(0xF << FLEXSPI_DLLACR_REFUPDINT_SHIFT)
++#define FLEXSPI_DLLACR_OVRDVAL_SHIFT	9
++#define FLEXSPI_DLLACR_OVRDVAL_MASK	(0x3F << FLEXSPI_DLLACR_OVRDVAL_SHIFT)
++#define FLEXSPI_DLLACR_OVRDEN_SHIFT	8
++#define FLEXSPI_DLLACR_OVRDEN_MASK	(1 << FLEXSPI_DLLACR_OVRDEN_SHIFT)
++#define FLEXSPI_DLLACR_SLVDLYTGT_SHIFT	3
++#define FLEXSPI_DLLACR_SLVDLYTGT_MASK	(0xF << FLEXSPI_DLLACR_SLVDLYTGT_SHIFT)
++#define FLEXSPI_DLLACR_DLLRST_SHIFT	1
++#define FLEXSPI_DLLACR_DLLRST_MASK	(1 << FLEXSPI_DLLACR_DLLRST_SHIFT)
++#define FLEXSPI_DLLACR_DLLEN_SHIFT	0
++#define FLEXSPI_DLLACR_DLLEN_MASK	(1 << FLEXSPI_DLLACR_DLLEN_SHIFT)
++
++#define FLEXSPI_DLLBCR			0xC4
++#define FLEXSPI_DLLBCR_REFUPDINT_SHIFT	28
++#define FLEXSPI_DLLBCR_REFUPDINT_MASK	(0xF << FLEXSPI_DLLBCR_REFUPDINT_SHIFT)
++#define FLEXSPI_DLLBCR_OVRDVAL_SHIFT	9
++#define FLEXSPI_DLLBCR_OVRDVAL_MASK	(0x3F << FLEXSPI_DLLBCR_OVRDVAL_SHIFT)
++#define FLEXSPI_DLLBCR_OVRDEN_SHIFT	8
++#define FLEXSPI_DLLBCR_OVRDEN_MASK	(1 << FLEXSPI_DLLBCR_OVRDEN_SHIFT)
++#define FLEXSPI_DLLBCR_SLVDLYTGT_SHIFT	3
++#define FLEXSPI_DLLBCR_SLVDLYTGT_MASK	(0xF << FLEXSPI_DLLBCR_SLVDLYTGT_SHIFT)
++#define FLEXSPI_DLLBCR_DLLRST_SHIFT	1
++#define FLEXSPI_DLLBCR_DLLRST_MASK	(1 << FLEXSPI_DLLBCR_DLLRST_SHIFT)
++#define FLEXSPI_DLLBCR_DLLEN_SHIFT	0
++#define FLEXSPI_DLLBCR_DLLEN_MASK	(1 << FLEXSPI_DLLBCR_DLLEN_SHIFT)
++
++#define FLEXSPI_STS0			0xE0
++#define FLEXSPI_STS0_DLPHA_SHIFT	9
++#define FLEXSPI_STS0_DLPHA_MASK		(0x1F << FLEXSPI_STS0_DLPHA_SHIFT)
++#define FLEXSPI_STS0_DLPHB_SHIFT	4
++#define FLEXSPI_STS0_DLPHB_MASK		(0x1F << FLEXSPI_STS0_DLPHB_SHIFT)
++#define FLEXSPI_STS0_CMD_SRC_SHIFT	2
++#define FLEXSPI_STS0_CMD_SRC_MASK	(3 << FLEXSPI_STS0_CMD_SRC_SHIFT)
++#define FLEXSPI_STS0_ARB_IDLE_SHIFT	1
++#define FLEXSPI_STS0_ARB_IDLE_MASK	(1 << FLEXSPI_STS0_ARB_IDLE_SHIFT)
++#define FLEXSPI_STS0_SEQ_IDLE_SHIFT	0
++#define FLEXSPI_STS0_SEQ_IDLE_MASK	(1 << FLEXSPI_STS0_SEQ_IDLE_SHIFT)
++
++#define FLEXSPI_STS1			0xE4
++#define FLEXSPI_STS1_IP_ERRCD_SHIFT	24
++#define FLEXSPI_STS1_IP_ERRCD_MASK	(0xF << FLEXSPI_STS1_IP_ERRCD_SHIFT)
++#define FLEXSPI_STS1_IP_ERRID_SHIFT	16
++#define FLEXSPI_STS1_IP_ERRID_MASK	(0xF << FLEXSPI_STS1_IP_ERRID_SHIFT)
++#define FLEXSPI_STS1_AHB_ERRCD_SHIFT	8
++#define FLEXSPI_STS1_AHB_ERRCD_MASK	(0xF << FLEXSPI_STS1_AHB_ERRCD_SHIFT)
++#define FLEXSPI_STS1_AHB_ERRID_SHIFT	0
++#define FLEXSPI_STS1_AHB_ERRID_MASK	(0xF << FLEXSPI_STS1_AHB_ERRID_SHIFT)
++
++#define FLEXSPI_AHBSPNST		0xEC
++#define FLEXSPI_AHBSPNST_DATLFT_SHIFT	16
++#define FLEXSPI_AHBSPNST_DATLFT_MASK	\
++	(0xFFFF << FLEXSPI_AHBSPNST_DATLFT_SHIFT)
++#define FLEXSPI_AHBSPNST_BUFID_SHIFT	1
++#define FLEXSPI_AHBSPNST_BUFID_MASK	(7 << FLEXSPI_AHBSPNST_BUFID_SHIFT)
++#define FLEXSPI_AHBSPNST_ACTIVE_SHIFT	0
++#define FLEXSPI_AHBSPNST_ACTIVE_MASK	(1 << FLEXSPI_AHBSPNST_ACTIVE_SHIFT)
++
++#define FLEXSPI_IPRXFSTS		0xF0
++#define FLEXSPI_IPRXFSTS_RDCNTR_SHIFT	16
++#define FLEXSPI_IPRXFSTS_RDCNTR_MASK	\
++	(0xFFFF << FLEXSPI_IPRXFSTS_RDCNTR_SHIFT)
++#define FLEXSPI_IPRXFSTS_FILL_SHIFT	0
++#define FLEXSPI_IPRXFSTS_FILL_MASK	(0xFF << FLEXSPI_IPRXFSTS_FILL_SHIFT)
++
++#define FLEXSPI_IPTXFSTS		0xF4
++#define FLEXSPI_IPTXFSTS_WRCNTR_SHIFT	16
++#define FLEXSPI_IPTXFSTS_WRCNTR_MASK	\
++	(0xFFFF << FLEXSPI_IPTXFSTS_WRCNTR_SHIFT)
++#define FLEXSPI_IPTXFSTS_FILL_SHIFT	0
++#define FLEXSPI_IPTXFSTS_FILL_MASK	(0xFF << FLEXSPI_IPTXFSTS_FILL_SHIFT)
++
++#define FLEXSPI_RFDR			0x100
++#define FLEXSPI_TFDR			0x180
++
++#define FLEXSPI_LUT_BASE		0x200
++
++/* register map end */
++
++/*
++ * The definition of the LUT register shows below:
++ *
++ *  ---------------------------------------------------
++ *  | INSTR1 | PAD1 | OPRND1 | INSTR0 | PAD0 | OPRND0 |
++ *  ---------------------------------------------------
++ */
++#define OPRND0_SHIFT		0
++#define PAD0_SHIFT		8
++#define INSTR0_SHIFT		10
++#define OPRND1_SHIFT		16
++
++/* Instruction set for the LUT register. */
++
++#define LUT_STOP		0x00
++#define LUT_CMD			0x01
++#define LUT_ADDR		0x02
++#define LUT_CADDR_SDR		0x03
++#define LUT_MODE		0x04
++#define LUT_MODE2		0x05
++#define LUT_MODE4		0x06
++#define LUT_MODE8		0x07
++#define LUT_FSL_WRITE		0x08
++#define LUT_FSL_READ		0x09
++#define LUT_LEARN_SDR		0x0A
++#define LUT_DATSZ_SDR		0x0B
++#define LUT_DUMMY		0x0C
++#define LUT_DUMMY_RWDS_SDR	0x0D
++#define LUT_JMP_ON_CS		0x1F
++#define LUT_CMD_DDR		0x21
++#define LUT_ADDR_DDR		0x22
++#define LUT_CADDR_DDR		0x23
++#define LUT_MODE_DDR		0x24
++#define LUT_MODE2_DDR		0x25
++#define LUT_MODE4_DDR		0x26
++#define LUT_MODE8_DDR		0x27
++#define LUT_WRITE_DDR		0x28
++#define LUT_READ_DDR		0x29
++#define LUT_LEARN_DDR		0x2A
++#define LUT_DATSZ_DDR		0x2B
++#define LUT_DUMMY_DDR		0x2C
++#define LUT_DUMMY_RWDS_DDR	0x2D
++
++
++/*
++ * The PAD definitions for LUT register.
++ *
++ * The pad stands for the lines number of IO[0:3].
++ * For example, the Quad read need four IO lines, so you should
++ * set LUT_PAD4 which means we use four IO lines.
++ */
++#define LUT_PAD1		0
++#define LUT_PAD2		1
++#define LUT_PAD4		2
++#define LUT_PAD8		3
++
++/* Oprands for the LUT register. */
++#define ADDR24BIT		0x18
++#define ADDR32BIT		0x20
++
++/* Macros for constructing the LUT register. */
++#define LUT0(ins, pad, opr)						\
++		(((opr) << OPRND0_SHIFT) | ((LUT_##pad) << PAD0_SHIFT) | \
++		((LUT_##ins) << INSTR0_SHIFT))
++
++#define LUT1(ins, pad, opr)	(LUT0(ins, pad, opr) << OPRND1_SHIFT)
++
++/* other macros for LUT register. */
++#define FLEXSPI_LUT(x,y)        (FLEXSPI_LUT_BASE + ((x) * 4 + (y)) * 4)
++#define FLEXSPI_LUT_NUM		64
++
++/* SEQID -- we can have 16 seqids at most
++ * The Cypress chip driver uses 37 different commands which cannot be stored
++ * all. So we compute the first LUT sequence on-the-fly as needed for not
++ * performance critial operations. Performance critical reads use AHB access
++ * and are precomputed (allowing different sequence pointers per chip select).
++ */
++#define SEQID_IP_UNIVERSAL	0
++#define SEQID_AHB_READ_111_3	1
++#define SEQID_AHB_READ_111_4	2
++#define SEQID_AHB_READ_144_3	3
++#define SEQID_AHB_READ_144_4	4
++#define SEQID_AHB_READ_888_4	5
++
++#define FLEXSPI_MIN_IOMAP	SZ_4M
++
++enum fsl_flexspi_devtype {
++	FSL_FLEXSPI_IMX8QM,
++	FSL_FLEXSPI_IMX8QXP,
++	FSL_FLEXSPI_IMX8MM,
++};
++
++struct fsl_flexspi_devtype_data {
++	enum fsl_flexspi_devtype devtype;
++	int rxfifo;
++	int txfifo;
++	int ahb_buf_size;
++	int driver_data;
++	int dllvalue;
++};
++
++static struct fsl_flexspi_devtype_data imx8qm_data = {
++	.devtype = FSL_FLEXSPI_IMX8QM,
++	.rxfifo = 1024,
++	.txfifo = 1024,
++	.ahb_buf_size = 2048,
++	.driver_data = FLEXSPI_QUIRK_CONFIG_DLL,
++	.dllvalue = 80, /* unit is 0.1 ns, this is 8ns */
++};
++
++static struct fsl_flexspi_devtype_data imx8qxp_data = {
++	.devtype = FSL_FLEXSPI_IMX8QXP,
++	.rxfifo = 1024,
++	.txfifo = 1024,
++	.ahb_buf_size = 2048,
++	.driver_data = FLEXSPI_QUIRK_CONFIG_DLL,
++	.dllvalue = 80, /* unit is 0.1 ns, this is 8ns */
++};
++
++static struct fsl_flexspi_devtype_data imx8mm_data = {
++	.devtype = FSL_FLEXSPI_IMX8MM,
++	.rxfifo = 1024,
++	.txfifo = 1024,
++	.ahb_buf_size = 2048,
++	.driver_data = FLEXSPI_QUIRK_QUAD_ONLY | FLEXSPI_QUIRK_FREQ_LIMIT,
++	.dllvalue = 0,
++};
++
++#define FSL_FLEXSPI_MAX_CHIP	4
++struct fsl_flexspi {
++	struct cy_spi_flash sf[FSL_FLEXSPI_MAX_CHIP];
++	struct mtd_info *mtd[FSL_FLEXSPI_MAX_CHIP];
++	void __iomem *iobase;
++	void __iomem *ahb_addr;
++	u32 memmap_phy;
++	struct clk *clk;
++	struct device *dev;
++	struct completion c;
++	struct fsl_flexspi_devtype_data *devtype_data;
++	u32 nor_size;
++	u32 nor_num;
++	u32 clk_rate;
++	unsigned int chip_base_addr; /* We may support two chips. */
++	u32 ddr_smp;
++	struct mutex lock;
++	struct pm_qos_request pm_qos_req;
++
++#define FLEXSPI_INITILIZED	(1 << 0)
++	int flags;
++};
++
++static inline int fsl_flexspi_need_config_dll(struct fsl_flexspi *flex)
++{
++	return flex->devtype_data->driver_data & FLEXSPI_QUIRK_CONFIG_DLL;
++}
++
++static inline int fsl_flexspi_freq_limit(struct fsl_flexspi *flex)
++{
++	return flex->devtype_data->driver_data & FLEXSPI_QUIRK_FREQ_LIMIT;
++}
++
++static inline int fsl_flexspi_quad_only(struct fsl_flexspi *flex)
++{
++	return flex->devtype_data->driver_data & FLEXSPI_QUIRK_QUAD_ONLY;
++}
++
++static inline void fsl_flexspi_unlock_lut(struct fsl_flexspi *flex)
++{
++	writel(FLEXSPI_LUTKEY_VALUE, flex->iobase + FLEXSPI_LUTKEY);
++	writel(FLEXSPI_LCKER_UNLOCK, flex->iobase + FLEXSPI_LCKCR);
++}
++
++static irqreturn_t fsl_flexspi_irq_handler(int irq, void *dev_id)
++{
++	struct fsl_flexspi *flex = dev_id;
++	u32 reg;
++
++	reg = readl(flex->iobase + FLEXSPI_INTR);
++	writel(FLEXSPI_INTR_IPCMDDONE_MASK, flex->iobase + FLEXSPI_INTR);
++	if (reg & FLEXSPI_INTR_IPCMDDONE_MASK)
++		complete(&flex->c);
++
++	return IRQ_HANDLED;
++}
++
++static void fsl_flexspi_init_lut(struct fsl_flexspi *flex)
++{
++	void __iomem *base = flex->iobase;
++
++	/* 1-1-1 Fast read with 3 address bytes */
++	writel(LUT0(CMD, PAD1, SPI_FAST_READ) | LUT1(ADDR, PAD1, ADDR24BIT),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_111_3, 0));
++	writel(LUT0(DUMMY, PAD1, 8) | LUT1(FSL_READ, PAD1, 0),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_111_3, 1));
++	writel(0, base + FLEXSPI_LUT(SEQID_AHB_READ_111_3, 2));
++	writel(0, base + FLEXSPI_LUT(SEQID_AHB_READ_111_3, 3));
++
++	/* 1-1-1 Fast read with 4 address bytes */
++	writel(LUT0(CMD, PAD1, SPI_FAST_READ) | LUT1(ADDR, PAD1, ADDR32BIT),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_111_4, 0));
++	writel(LUT1(DUMMY, PAD1, 8) | LUT0(FSL_READ, PAD1, 0),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_111_4, 1));
++	writel(0, base + FLEXSPI_LUT(SEQID_AHB_READ_111_4, 2));
++	writel(0, base + FLEXSPI_LUT(SEQID_AHB_READ_111_4, 3));
++
++	/* 1-4-4 Quad read with 3 address bytes */
++	writel(LUT0(CMD, PAD1, SPI_QUAD_READ_HP) | LUT1(ADDR, PAD4, ADDR24BIT),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_144_3, 0));
++	writel(LUT0(MODE8, PAD4, 0) | LUT1(DUMMY, PAD4, 8),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_144_3, 1));
++	writel(LUT0(FSL_READ, PAD4, 0),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_144_3, 2));
++	writel(0, base + FLEXSPI_LUT(SEQID_AHB_READ_144_3, 3));
++
++	/* 1-4-4 Quad read with 4 address bytes */
++	writel(LUT0(CMD, PAD1, SPI_QUAD_READ_HP) | LUT1(ADDR, PAD4, ADDR32BIT),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_144_4, 0));
++	writel(LUT0(MODE8, PAD4, 0) | LUT1(DUMMY, PAD4, 8),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_144_4, 1));
++	writel(LUT0(FSL_READ, PAD4, 0),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_144_4, 2));
++	writel(0, base + FLEXSPI_LUT(SEQID_AHB_READ_144_4, 3));
++
++	/* 8-8-8 Octal read with 4 address bytes */
++	writel(LUT0(CMD, PAD8, SPI_QUAD_READ_HP) |
++	       LUT1(CMD, PAD8, SPI_QUAD_READ_HP),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_888_4, 0));
++	writel(LUT0(ADDR, PAD8, ADDR32BIT) | LUT1(MODE8, PAD8, 0),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_888_4, 1));
++	writel(LUT0(DUMMY, PAD8, 20) | LUT1(FSL_READ, PAD8, 0),
++	       base + FLEXSPI_LUT(SEQID_AHB_READ_888_4, 2));
++	writel(0, base + FLEXSPI_LUT(SEQID_AHB_READ_888_4, 3));
++}
++
++static int fsl_flexspi_runcmd(struct fsl_flexspi *flex, unsigned int addr,
++			      int len)
++{
++	void __iomem *base = flex->iobase;
++	u32 reg;
++
++	init_completion(&flex->c);
++	dev_dbg(flex->dev, "to 0x%.8x:0x%.8x, len:%d\n",
++			flex->chip_base_addr, addr, len);
++
++	/* set up address and seqid/seqnr/data_length */
++	writel(flex->chip_base_addr + addr, base + FLEXSPI_IPCR0);
++
++	writel((SEQID_IP_UNIVERSAL << FLEXSPI_IPCR1_SEQID_SHIFT) | len,
++	       base + FLEXSPI_IPCR1);
++
++	/* wait till controller is idle */
++	do {
++		reg = readl(base + FLEXSPI_STS0);
++		if ((reg & FLEXSPI_STS0_ARB_IDLE_MASK) &&
++		    (reg & FLEXSPI_STS0_SEQ_IDLE_MASK))
++			break;
++		udelay(1);
++	} while (1);
++
++	/* trigger the LUT now */
++	writel(1, base + FLEXSPI_IPCMD);
++
++	/* Wait for the interrupt. */
++	if (!wait_for_completion_timeout(&flex->c, msecs_to_jiffies(1000))) {
++		dev_info(flex->dev,
++			 "timeout addr@%.8x S0:0x%.8x S1:0x%.8x\n",
++			 addr, readl(base + FLEXSPI_STS0),
++			 readl(base + FLEXSPI_STS1));
++		return -ETIMEDOUT;
++	}
++
++	return 0;
++}
++
++/* Read out the data from the FLEXSPI_RBDR buffer registers. */
++static void fsl_flexspi_read_data(struct fsl_flexspi *flex, int len, u8 *rxbuf)
++{
++	int i, size;
++
++	/* clear RX FIFO */
++	writel(FLEXSPI_IPRXFCR_CLR_MASK, flex->iobase + FLEXSPI_IPRXFCR);
++
++	size = len / 8;
++
++	for (i = 0; i < size; ++i) {
++		/* Wait for RXFIFO to be available */
++		while (!(readl(flex->iobase + FLEXSPI_INTR)
++			 & FLEXSPI_INTR_IPRXWA_MASK))
++			;
++
++		/* read 64 bit data once */
++		memcpy(rxbuf, flex->iobase + FLEXSPI_RFDR, 8);
++		rxbuf += 8;
++
++		/* move the FIFO pointer */
++		writel(FLEXSPI_INTR_IPRXWA_MASK, flex->iobase + FLEXSPI_INTR);
++		len -= 8;
++	}
++
++	size = len % 8;
++
++	if (size) {
++		/* Wait for RXFIFO to be available */
++		while (!(readl(flex->iobase + FLEXSPI_INTR)
++			 & FLEXSPI_INTR_IPRXWA_MASK))
++			;
++		memcpy(rxbuf, flex->iobase + FLEXSPI_RFDR, size);
++	}
++
++	/* move the FIFO pointer */
++	writel(FLEXSPI_INTR_IPRXWA_MASK, flex->iobase + FLEXSPI_INTR);
++}
++
++/* Write data to the FLEXSPI IP TXFIFO. */
++static void fsl_flexspi_write_data(struct fsl_flexspi *flex, int len,
++				   const u8 *txbuf)
++{
++	int i, size;
++
++	/* clear TX FIFO */
++	writel(FLEXSPI_IPTXFCR_CLR_MASK, flex->iobase + FLEXSPI_IPTXFCR);
++
++	size = len / 8;
++
++	for (i = 0; i < size; i++) {
++		/* Wait for TXFIFO to be available */
++		while (!(readl(flex->iobase + FLEXSPI_INTR)
++			 & FLEXSPI_INTR_IPTXWE_MASK))
++			;
++
++		/* write 64 bit data once */
++		memcpy(flex->iobase + FLEXSPI_TFDR, txbuf, 8);
++		txbuf += 8;
++
++		/* move the FIFO pointer */
++		writel(FLEXSPI_INTR_IPTXWE_MASK, flex->iobase + FLEXSPI_INTR);
++	}
++
++	size = len % 8;
++
++	if (size) {
++		/* Wait for TXFIFO to be available */
++		while (!(readl(flex->iobase + FLEXSPI_INTR)
++			 & FLEXSPI_INTR_IPTXWE_MASK))
++			;
++
++		memcpy(flex->iobase + FLEXSPI_TFDR, txbuf, size);
++
++		/* move the FIFO pointer */
++		writel(FLEXSPI_INTR_IPTXWE_MASK, flex->iobase + FLEXSPI_INTR);
++	}
++
++}
++
++/*
++ * If we have changed the content of the flash by writing or erasing,
++ * we need to invalidate the AHB buffer. If we do not do so, we may read out
++ * the wrong data. The spec tells us reset the AHB domain and Serial Flash
++ * domain at the same time.
++ */
++static inline void fsl_flexspi_invalidate_ahb_buffer(struct fsl_flexspi *flex)
++{
++	u32 reg;
++
++	reg = readl(flex->iobase + FLEXSPI_MCR0);
++	writel(reg | FLEXSPI_MCR0_SWRST_MASK, flex->iobase + FLEXSPI_MCR0);
++
++	/*
++	 * The minimum delay : 1 AHB + 2 SFCK clocks.
++	 * Delay 1 us is enough.
++	 */
++	while (readl(flex->iobase + FLEXSPI_MCR0) & FLEXSPI_MCR0_SWRST_MASK)
++		;
++
++}
++
++/*
++ * There are two different ways to read out the data from the flash:
++ *  the "IP Command Read" and the "AHB Command Read".
++ *
++ * The IC guy suggests we use the "AHB Command Read" which is faster
++ * then the "IP Command Read". (What's more is that there is a bug in
++ * the "IP Command Read" in the Vybrid.)
++ *
++ * After we set up the registers for the "AHB Command Read", we can use
++ * the memcpy to read the data directly. A "missed" access to the buffer
++ * causes the controller to clear the buffer, and use the sequence pointed
++ * by the FLEXSPI_BFGENCR[SEQID] to initiate a read from the flash.
++ */
++static int fsl_flexspi_init_ahb_read(struct fsl_flexspi *flex)
++{
++	void __iomem *base = flex->iobase;
++	int nor_size, alen, i;
++	unsigned int *fp = (unsigned int *)(flex->sf[0].chip.priv);
++
++	/* ioremap controller I/O memory */
++	if (!flex->ahb_addr) {
++		flex->ahb_addr = ioremap(flex->memmap_phy, flex->nor_size * 4);
++		if (!flex->ahb_addr) {
++			dev_err(flex->dev, "ioremap failed\n");
++			return -ENOMEM;
++		}
++	}
++
++	/* AHB configuration for access buffer 0/1/2 .*/
++	for (i = 0; i < 7; i++)
++		writel(0, base + FLEXSPI_AHBRX_BUF0CR0 + 4 * i);
++	/*
++	 * Set ADATSZ with the maximum AHB buffer size to improve the
++	 * read performance.
++	 */
++	writel((flex->devtype_data->ahb_buf_size / 8 |
++		FLEXSPI_AHBRXBUF0CR7_PREF_MASK),
++	       base + FLEXSPI_AHBRX_BUF7CR0);
++
++	/* No start address alignment limitation */
++	writel(FLEXSPI_AHBCR_RDADDROPT_MASK, base + FLEXSPI_AHBCR);
++
++	/* Set AHB address window sizes */
++	nor_size = flex->nor_size >> 10;
++	writel(nor_size, base + FLEXSPI_FLSHA1CR0);
++	writel(nor_size, base + FLEXSPI_FLSHA2CR0);
++	writel(nor_size, base + FLEXSPI_FLSHB1CR0);
++	writel(nor_size, base + FLEXSPI_FLSHB2CR0);
++
++	/* Set LUT sequence IDs for AHB reads */
++
++	if (flex->sf[0].io_mode == SPI_OPI)
++		i = SEQID_AHB_READ_888_4;
++	else {
++		alen = ((fp && (*fp & (ADDR32_BAR | ADDR32_4BAM))) ? 4 : 3);
++		if (flex->sf[0].io_mode == SPI_QUAD_O_HP)
++			i = (alen == 4 ?
++			     SEQID_AHB_READ_144_4 : SEQID_AHB_READ_144_3);
++		else
++			i = (alen == 4 ?
++			     SEQID_AHB_READ_111_4 : SEQID_AHB_READ_111_3);
++	}
++
++	writel(i, base + FLEXSPI_FLSHA1CR2);
++	writel(i, base + FLEXSPI_FLSHA2CR2);
++	writel(i, base + FLEXSPI_FLSHB1CR2);
++	writel(i, base + FLEXSPI_FLSHB2CR2);
++
++	return 0;
++}
++
++static void fsl_flexspi_ahb_pref_en(struct fsl_flexspi *flex)
++{
++	void __iomem *base = flex->iobase;
++	u32 reg;
++
++	reg = readl(base + FLEXSPI_AHBCR);
++	writel(FLEXSPI_AHBCR_PREF_EN_MASK | reg, base + FLEXSPI_AHBCR);
++}
++
++/* This function was used to prepare and enable QSPI clock */
++static int fsl_flexspi_clk_prep_enable(struct fsl_flexspi *flex)
++{
++	int ret;
++
++	ret = clk_prepare_enable(flex->clk);
++	if (ret) {
++		dev_err(flex->dev, "failed to enable the clock\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++/* This function was used to disable and unprepare QSPI clock */
++static void fsl_flexspi_clk_disable_unprep(struct fsl_flexspi *flex)
++{
++	clk_disable_unprepare(flex->clk);
++}
++
++static int fsl_flexspi_init_rpm(struct fsl_flexspi *flex)
++{
++	struct device *dev = flex->dev;
++
++	pm_runtime_enable(dev);
++	pm_runtime_set_autosuspend_delay(dev, FSL_FLEXSPI_RPM_TIMEOUT);
++	pm_runtime_use_autosuspend(dev);
++
++	return 0;
++}
++
++static void fsl_flexspi_config_dll(struct fsl_flexspi *flex, int rate)
++{
++	int tmp, dll;
++	u32 reg;
++
++	if (!fsl_flexspi_need_config_dll(flex))
++		return;
++
++	if (rate >= 100 * FREQ_1MHz) {
++		writel(FLEXSPI_DLLACR_DLLEN_MASK |
++		       FLEXSPI_DLLACR_SLVDLYTGT_MASK,
++			flex->iobase + FLEXSPI_DLLACR);
++		writel(FLEXSPI_DLLBCR_DLLEN_MASK |
++		       FLEXSPI_DLLBCR_SLVDLYTGT_MASK,
++			flex->iobase + FLEXSPI_DLLBCR);
++	} else {
++	/*
++	 * If Serial root clock is lower than 100MHz, DLL is unable to lock on
++	 * half cycle of serial root clock because the dealy cell number is
++	 * limited in delay chain, Then DLL should be configured as following
++	 * instead:
++	 * OVRDEN  = 0x01
++	 * OVRDVAL = N; each dealy cell in DLL is about 75ps - 225ps.
++	 * The delay of DLL delay chain ( N * delay_cell_delay) should be
++	 * larger than device output data valid time (from SCK edge to data
++	 * valid).
++	 */
++
++		/* 0.1 ns to ps */
++		tmp = flex->devtype_data->dllvalue * 100;
++		dll = tmp / FLEXSPI_DLL_MIN;
++
++		if (dll >= FLEXSPI_DLLACR_OVRDVAL_MASK)
++			dll = FLEXSPI_DLLACR_OVRDVAL_MASK;
++		else if (dll * FLEXSPI_DLL_MIN < tmp)
++			dll++;
++
++		writel(FLEXSPI_DLLACR_OVRDEN_MASK |
++		       (dll << FLEXSPI_DLLACR_OVRDVAL_SHIFT) |
++		       FLEXSPI_DLLACR_DLLRST_MASK,
++		       flex->iobase + FLEXSPI_DLLACR);
++		udelay(1);
++		reg = readl(flex->iobase + FLEXSPI_DLLACR);
++		writel(reg & ~FLEXSPI_DLLACR_DLLRST_MASK,
++		       flex->iobase + FLEXSPI_DLLACR);
++
++		writel(FLEXSPI_DLLBCR_OVRDEN_MASK |
++		       (dll << FLEXSPI_DLLBCR_OVRDVAL_SHIFT) |
++		       FLEXSPI_DLLBCR_DLLRST_MASK,
++		       flex->iobase + FLEXSPI_DLLBCR);
++		udelay(1);
++		reg = readl(flex->iobase + FLEXSPI_DLLBCR);
++		writel(reg & ~FLEXSPI_DLLBCR_DLLRST_MASK,
++		       flex->iobase + FLEXSPI_DLLBCR);
++	}
++}
++
++/* We use this function to do some basic initialization steps */
++static int fsl_flexspi_nor_setup(struct fsl_flexspi *flex)
++{
++	void __iomem *base = flex->iobase;
++	int ret;
++
++	/* disable and unprepare clock to avoid glitch pass to controller */
++	fsl_flexspi_clk_disable_unprep(flex);
++
++	/* set rate to 24Mhz as safe clock rate to probe */
++	ret = clk_set_rate(flex->clk, 24 * FREQ_1MHz);
++	if (ret)
++		return ret;
++
++	ret = fsl_flexspi_clk_prep_enable(flex);
++	if (ret)
++		return ret;
++
++	/* Reset the module */
++	writel(FLEXSPI_MCR0_SWRST_MASK, base + FLEXSPI_MCR0);
++	do {
++		udelay(1);
++	} while (0x1 & readl(base + FLEXSPI_MCR0));
++
++	/* Disable the module */
++	writel(FLEXSPI_MCR0_MDIS_MASK, base + FLEXSPI_MCR0);
++
++	/* enable module */
++	writel(FLEXSPI_MCR0_AHB_TIMEOUT_MASK | FLEXSPI_MCR0_IP_TIMEOUT_MASK |
++	       FLEXSPI_MCR0_OCTCOMB_EN_MASK, base + FLEXSPI_MCR0);
++
++	/* Reset the FLASHxCR2 */
++	writel(0, base + FLEXSPI_FLSHA1CR2);
++	writel(0, base + FLEXSPI_FLSHA2CR2);
++	writel(0, base + FLEXSPI_FLSHB1CR2);
++	writel(0, base + FLEXSPI_FLSHB2CR2);
++
++	/* Unlock the LUT table. */
++	fsl_flexspi_unlock_lut(flex);
++
++	/* enable the interrupt */
++	writel(FLEXSPI_INTEN_IPCMDDONE_MASK, flex->iobase + FLEXSPI_INTEN);
++
++	return 0;
++}
++
++static int fsl_flexspi_nor_setup_last(struct fsl_flexspi *flex)
++{
++	unsigned long rate = flex->clk_rate;
++	int ret;
++
++	/* set to the assigned clock rate */
++	fsl_flexspi_clk_disable_unprep(flex);
++
++	/* clock limitation for i.MX8MM, no more than 160Mhz */
++	if (fsl_flexspi_freq_limit(flex))
++		rate = rate > 160 * FREQ_1MHz ? 160 * FREQ_1MHz : rate;
++
++	ret = clk_set_rate(flex->clk, rate);
++	if (ret)
++		return ret;
++
++	ret = fsl_flexspi_clk_prep_enable(flex);
++	if (ret)
++		return ret;
++
++	/* setup the DLL value */
++	fsl_flexspi_config_dll(flex, rate);
++
++	/* Init the LUT table. */
++	fsl_flexspi_init_lut(flex);
++
++	/* Init for AHB read */
++	ret = fsl_flexspi_init_ahb_read(flex);
++	if (ret)
++		return ret;
++
++	/* enable AHB prefetch */
++	fsl_flexspi_ahb_pref_en(flex);
++
++	return 0;
++}
++
++static void fsl_flexspi_set_base_addr(struct fsl_flexspi *flex,
++				      struct cy_spi_flash *sf)
++{
++	flex->chip_base_addr = flex->nor_size * (sf - flex->sf);
++}
++
++static int fsl_flexspi_prep(struct fsl_flexspi *flex, struct cy_spi_flash *sf)
++{
++	int ret;
++
++	mutex_lock(&flex->lock);
++
++	ret = pm_runtime_get_sync(flex->dev);
++	if (ret < 0) {
++		dev_err(flex->dev, "Failed to enable clock %d\n", __LINE__);
++		goto err_mutex;
++	}
++
++	fsl_flexspi_set_base_addr(flex, sf);
++	return 0;
++
++err_mutex:
++	mutex_unlock(&flex->lock);
++	return ret;
++}
++
++static void fsl_flexspi_unprep(struct fsl_flexspi *flex)
++{
++	pm_runtime_mark_last_busy(flex->dev);
++	pm_runtime_put_autosuspend(flex->dev);
++	mutex_unlock(&flex->lock);
++}
++
++static int fsl_flexspi_read(struct cy_spi_flash *sf, unsigned char command,
++			    void *to, unsigned long from, size_t len)
++{
++	struct fsl_flexspi *flex = sf->priv;
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	void __iomem *base = flex->iobase;
++	int n, i = 0, lut0 = 0, dummy = 0, res = 0;
++	u8 addrlen;
++
++	res = fsl_flexspi_prep(flex, sf);
++	if (res)
++		return res;
++
++	if (command == SPI_FAST_READ ||
++	    command == SPI_QUAD_READ_HP ||
++	    command == SPI_QUAD_READ_HP_4) {
++
++		/* The normal memcpy() crashes here in some situations, so we
++		   use an explicit loop as a workaround, should be:
++		   memcpy(to, flex->ahb_addr + flex->chip_base_addr + from,
++		          len);
++		*/
++		for (n = 0; n < len; n++)
++			*(unsigned char*)(to + n) = *(unsigned char*)
++			 (flex->ahb_addr + flex->chip_base_addr + from + n);
++		goto out;
++	}
++
++	/* Set up LUT sequence for IP access */
++
++	if (sf->io_mode == SPI_OPI) {
++		writel(LUT0(CMD, PAD8, command) | LUT1(CMD, PAD8, command),
++		       base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++		i++;
++		if (from != SPI_NO_ADDR)
++			lut0 = LUT0(ADDR, PAD8, ADDR32BIT);
++	}
++	else {
++		lut0 = LUT0(CMD, PAD1, command);
++		if (from != SPI_NO_ADDR) {
++			if ((flags & (ADDR32_BAR | ADDR32_4BAM)) ||
++			    command == SPI_PPB_READ_4)
++				addrlen = ADDR32BIT;
++			else
++				addrlen = ADDR24BIT;
++			writel(lut0 | LUT1(ADDR, PAD1, addrlen),
++			       base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			i++;
++			lut0 = 0;
++		}
++	}
++
++	switch (command) {
++	case SPI_READ_ID:
++	case SPI_READ_STATUS:
++		if (sf->io_mode == SPI_OPI)
++			dummy += 3;
++		break;
++	case SPI_READ_ANY_REG:
++		if (sf->io_mode == SPI_OPI)
++			dummy += 3 + sf->vr_latency;
++		else
++			dummy += 8;
++		break;
++	case SPI_PPB_READ_4:
++		if (sf->io_mode == SPI_OPI)
++			dummy += 20;
++		else
++			dummy += 8;
++	}
++	if (dummy) {
++		if (lut0) {
++			if (sf->io_mode == SPI_OPI)
++				writel(lut0 | LUT1(DUMMY, PAD8, dummy), base +
++				       FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			else
++				writel(lut0 | LUT1(DUMMY, PAD1, dummy), base +
++				       FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			i++;
++			lut0 = 0;
++		}
++		else
++			if (sf->io_mode == SPI_OPI)
++				lut0 = LUT0(DUMMY, PAD8, dummy);
++			else
++				lut0 = LUT0(DUMMY, PAD1, dummy);
++	}
++
++	if (len) {
++		if (lut0) {
++			if (sf->io_mode == SPI_OPI)
++				writel(lut0 | LUT1(FSL_READ, PAD8, 0), base +
++				       FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			else
++				writel(lut0 | LUT1(FSL_READ, PAD1, 0), base +
++				       FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			i++;
++			lut0 = 0;
++		}
++		else
++			if (sf->io_mode == SPI_OPI)
++				lut0 = LUT0(FSL_READ, PAD8, len);
++			else
++				lut0 = LUT0(FSL_READ, PAD1, len);
++	}
++
++	if (lut0) {
++		writel(lut0, base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++		i++;
++	}
++
++	while (i < 4) {
++		writel(0, base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++		i++;
++	}
++
++	/* Execute command (valid address always required for CS# control) */
++
++	res = fsl_flexspi_runcmd(flex, from == SPI_NO_ADDR ? 0 : from, len);
++	if (res)
++		goto out;
++
++	/* Read response from RXFIFO */
++
++	if (len) {
++		fsl_flexspi_read_data(flex, len, to);
++
++		if (command == SPI_READ_ANY_REG &&
++		    sf->vr_latency && sf->io_mode != SPI_OPI &&
++		    (from >= AR_SR1V || flags & IS_FRAM))
++			*(unsigned char *)to =
++			 (*(unsigned char *)to >> (8 - sf->vr_latency)) |
++			 (*(unsigned char *)to << sf->vr_latency);
++	}
++
++ out:
++	fsl_flexspi_unprep(flex);
++	return res;
++}
++
++static int fsl_flexspi_write(struct cy_spi_flash *sf, unsigned char command,
++			const void *from, unsigned long to, size_t len)
++{
++	struct fsl_flexspi *flex = sf->priv;
++	unsigned int flags = *(unsigned int *)(sf->chip.priv);
++	void __iomem *base = flex->iobase;
++	int i = 0, lut0 = 0, res = 0;
++	u8 addrlen;
++
++	res = fsl_flexspi_prep(flex, sf);
++	if (res)
++		return res;
++
++	/* IP command: set up LUT sequence */
++
++	if (sf->io_mode == SPI_OPI) {
++		writel(LUT0(CMD, PAD8, command) | LUT1(CMD, PAD8, command),
++		       base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++		i++;
++		if (to != SPI_NO_ADDR)
++			lut0 = LUT0(ADDR, PAD8, ADDR32BIT);
++	}
++	else {
++		lut0 = LUT0(CMD, PAD1, command);
++		if (to != SPI_NO_ADDR) {
++			if ((flags & (ADDR32_BAR | ADDR32_4BAM)) ||
++			    command == SPI_PPB_PROG_4)
++				addrlen = ADDR32BIT;
++			else
++				addrlen = ADDR24BIT;
++			writel(lut0 | LUT1(ADDR, PAD1, addrlen),
++			       base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			i++;
++			lut0 = 0;
++		}
++	}
++
++	if (flags & IS_FRAM)
++		if (command == SPI_QUAD_PROGRAM ||
++		    command == SPI_QUAD_PROGRAM_HP)
++			lut0 = LUT0(MODE8, PAD4, 0);
++
++	if (len) {
++		if (lut0) {
++			if (sf->io_mode == SPI_OPI)
++				writel(lut0 | LUT1(FSL_WRITE, PAD8, len), base
++				       + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			else
++				writel(lut0 | LUT1(FSL_WRITE, PAD1, len), base
++				       + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++			i++;
++			lut0 = 0;
++		}
++		else
++			if (sf->io_mode == SPI_OPI)
++				lut0 = LUT0(FSL_WRITE, PAD8, 0);
++			else
++				lut0 = LUT0(FSL_WRITE, PAD1, 0);
++	}
++
++	if (lut0) {
++		writel(lut0, base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++		i++;
++	}
++
++	while (i < 4) {
++		writel(0, base + FLEXSPI_LUT(SEQID_IP_UNIVERSAL, i));
++		i++;
++	}
++
++	/* Write data to TXFIFO */
++
++	if (len)
++		fsl_flexspi_write_data(flex, len, from);
++
++	/* Execute command (valid address always required for CS# control) */
++
++	res = fsl_flexspi_runcmd(flex, to == SPI_NO_ADDR ? 0 : to, len);
++	if (res)
++		goto out;
++
++	/* Invalidate AHB buffers in case of any main array changes */
++
++	if (command == SPI_ERASE ||
++	    command == SPI_ERASE_4 ||
++	    command == SPI_ERASE_4K ||
++	    command == SPI_ERASE_4K_4 ||
++	    command == SPI_PROGRAM ||
++	    command == SPI_PROGRAM_4 ||
++	    command == SPI_QUAD_PROGRAM ||
++	    command == SPI_QUAD_PROGRAM_HP)
++		fsl_flexspi_invalidate_ahb_buffer(flex);
++
++ out:
++	fsl_flexspi_unprep(flex);
++	return res;
++}
++
++static const struct of_device_id fsl_flexspi_dt_ids[] = {
++	{ .compatible = "fsl,imx8qm-flexspi", .data = (void *)&imx8qm_data, },
++	{ .compatible = "fsl,imx8qxp-flexspi", .data = (void *)&imx8qxp_data, },
++	{ .compatible = "fsl,imx8mm-flexspi", .data = (void *)&imx8mm_data, },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, fsl_flexspi_dt_ids);
++
++static int fsl_flexspi_probe(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct device *dev = &pdev->dev;
++	struct fsl_flexspi *flex;
++	struct resource *res;
++	struct cy_spi_flash *sf;
++	int ret, i = 0;
++
++	const struct of_device_id *of_id =
++			of_match_device(fsl_flexspi_dt_ids, &pdev->dev);
++
++	flex = devm_kzalloc(dev, sizeof(*flex), GFP_KERNEL);
++	if (!flex)
++		return -ENOMEM;
++
++	flex->nor_num = of_get_child_count(dev->of_node);
++	if (!flex->nor_num || flex->nor_num > 4)
++		return -ENODEV;
++
++	flex->dev = dev;
++	flex->devtype_data = (struct fsl_flexspi_devtype_data *)of_id->data;
++	platform_set_drvdata(pdev, flex);
++
++	/* find the resources */
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "FlexSPI");
++	if (!res) {
++		dev_err(dev, "FlexSPI get resource IORESOURCE_MEM failed\n");
++		return -ENODEV;
++	}
++
++	flex->iobase = devm_ioremap_resource(dev, res);
++	if (IS_ERR(flex->iobase))
++		return PTR_ERR(flex->iobase);
++
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
++					"FlexSPI-memory");
++	if (!res) {
++		dev_err(dev,
++			"FlexSPI-memory get resource IORESOURCE_MEM failed\n");
++		return -ENODEV;
++	}
++
++	if (!devm_request_mem_region(dev, res->start, resource_size(res),
++				     res->name)) {
++		dev_err(dev, "can't request region for resource %pR\n", res);
++		return -EBUSY;
++	}
++
++	flex->memmap_phy = res->start;
++
++	/* find the clocks */
++	flex->clk = devm_clk_get(dev, "fspi");
++	if (IS_ERR(flex->clk))
++		return PTR_ERR(flex->clk);
++
++	/* find ddrsmp value */
++	ret = of_property_read_u32(dev->of_node, "ddrsmp",
++				&flex->ddr_smp);
++	if (ret)
++		flex->ddr_smp = 0;
++
++	/* enable the rpm */
++	ret = fsl_flexspi_init_rpm(flex);
++	if (ret) {
++		dev_err(dev, "can not enable the clock\n");
++		goto clk_failed;
++	}
++
++	/* find the irq */
++	ret = platform_get_irq(pdev, 0);
++	if (ret < 0) {
++		dev_err(dev, "failed to get the irq: %d\n", ret);
++		goto rpm_failed;
++	}
++
++	ret = devm_request_irq(dev, ret,
++			       fsl_flexspi_irq_handler, 0, pdev->name, flex);
++	if (ret) {
++		dev_err(dev, "failed to request irq: %d\n", ret);
++		goto rpm_failed;
++	}
++
++	/* enable the clock*/
++	ret = pm_runtime_get_sync(flex->dev);
++	if (ret < 0) {
++		dev_err(flex->dev, "Failed to enable clock %d\n", __LINE__);
++		goto rpm_failed;
++	}
++
++
++	ret = fsl_flexspi_nor_setup(flex);
++	if (ret)
++		goto rpm_failed;
++
++	mutex_init(&flex->lock);
++
++	/* iterate the subnodes */
++	for_each_available_child_of_node(dev->of_node, np) {
++		u32 dummy = 0;
++
++		sf = &flex->sf[i];
++
++		/* fill the hooks */
++		sf->read_op = fsl_flexspi_read;
++		sf->write_op = fsl_flexspi_write;
++		sf->priv = flex;
++
++		ret = of_property_read_u32(np, "spi-max-frequency",
++				&flex->clk_rate);
++		if (ret < 0)
++			goto mutex_failed;
++
++		/* Can we enable the DDR Quad Read? */
++		ret = of_property_read_u32(np, "spi-nor,ddr-quad-read-dummy",
++					&dummy);
++		if (!ret && dummy > 0)
++			sf->io_mode = SPI_QUAD_O_HP;  /* DDR to be added */
++		else
++			sf->io_mode = SPI_SINGLE_IO_FASTREAD;
++
++		/* set the chip address for READID */
++		fsl_flexspi_set_base_addr(flex, sf);
++
++		flex->mtd[i] = cy_spi_probe(sf);
++		if (!flex->mtd[i])
++			goto mutex_failed;
++
++		ret = mtd_device_register(flex->mtd[i], NULL, 0);
++		if (ret)
++			goto mutex_failed;
++
++		/* set the correct NOR size */
++		if (flex->nor_size == 0)
++			flex->nor_size = flex->mtd[i]->size;
++
++		/*
++		 * The TX FIFO is 64 bytes in the Vybrid, but the Page Program
++		 * may writes 512 bytes per time. The write is working in the
++		 * unit of the TX FIFO, not in the unit of the SPI NOR's page
++		 * size.
++		 *
++		 * So split transfers if they are larger than the TX FIFO.
++		 */
++		sf->max_data_len_write = flex->devtype_data->txfifo;
++
++		i++;
++	}
++
++	/* finish the initialization */
++	ret = fsl_flexspi_nor_setup_last(flex);
++	if (ret)
++		goto last_init_failed;
++
++	pm_runtime_mark_last_busy(flex->dev);
++	pm_runtime_put_autosuspend(flex->dev);
++
++	/* indicate that the controller has been initialized */
++	flex->flags |= FLEXSPI_INITILIZED;
++
++	return 0;
++
++last_init_failed:
++	for (i = 0; i < flex->nor_num; i++)
++		mtd_device_unregister(flex->mtd[i]);
++mutex_failed:
++	mutex_destroy(&flex->lock);
++rpm_failed:
++	pm_runtime_dont_use_autosuspend(flex->dev);
++	pm_runtime_disable(flex->dev);
++clk_failed:
++	dev_err(dev, "Freescale FlexSPI probe failed\n");
++	return ret;
++}
++
++static int fsl_flexspi_remove(struct platform_device *pdev)
++{
++	struct fsl_flexspi *flex = platform_get_drvdata(pdev);
++	int i;
++
++	for (i = 0; i < flex->nor_num; i++)
++		if (flex->mtd[i])
++			mtd_device_unregister(flex->mtd[i]);
++
++	/* disable the hardware */
++	writel(FLEXSPI_MCR0_MDIS_MASK, flex->iobase + FLEXSPI_MCR0);
++
++	pm_runtime_dont_use_autosuspend(flex->dev);
++	pm_runtime_disable(flex->dev);
++
++	mutex_destroy(&flex->lock);
++
++	if (flex->ahb_addr)
++		iounmap(flex->ahb_addr);
++
++	return 0;
++}
++
++static int fsl_flexspi_initialized(struct fsl_flexspi *flex)
++{
++	return flex->flags & FLEXSPI_INITILIZED;
++}
++
++static int fsl_flexspi_need_reinit(struct fsl_flexspi *flex)
++{
++	/* we always use the controller in combination mode, so we check */
++	/* this register bit to determine if the controller once lost power, */
++	/* such as suspend/resume, and need to be re-init */
++
++	return !(readl(flex->iobase + FLEXSPI_MCR0) &
++		 FLEXSPI_MCR0_OCTCOMB_EN_MASK);
++}
++
++static int fsl_flexspi_runtime_suspend(struct device *dev)
++{
++	struct fsl_flexspi *flex = dev_get_drvdata(dev);
++
++	fsl_flexspi_clk_disable_unprep(flex);
++
++	return 0;
++}
++
++static int fsl_flexspi_runtime_resume(struct device *dev)
++{
++	struct fsl_flexspi *flex = dev_get_drvdata(dev);
++
++	fsl_flexspi_clk_prep_enable(flex);
++
++	if (fsl_flexspi_initialized(flex) &&
++			fsl_flexspi_need_reinit(flex)) {
++		fsl_flexspi_nor_setup(flex);
++		fsl_flexspi_nor_setup_last(flex);
++	}
++
++	return 0;
++}
++
++static const struct dev_pm_ops fsl_flexspi_pm_ops = {
++	SET_RUNTIME_PM_OPS(fsl_flexspi_runtime_suspend,
++			   fsl_flexspi_runtime_resume, NULL)
++	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
++				pm_runtime_force_resume)
++};
++
++static struct platform_driver fsl_flexspi_driver = {
++	.driver = {
++		.name	= "fsl-flexspi",
++		.bus	= &platform_bus_type,
++		.pm	= &fsl_flexspi_pm_ops,
++		.of_match_table = fsl_flexspi_dt_ids,
++	},
++	.probe          = fsl_flexspi_probe,
++	.remove		= fsl_flexspi_remove,
++};
++module_platform_driver(fsl_flexspi_driver);
++
++
++MODULE_DESCRIPTION("Freescale FlexSPI Controller Driver");
++MODULE_AUTHOR("Freescale Semiconductor Inc.");
++MODULE_LICENSE("GPL v2");
+Signed-off-by: Gernot Hoyler <Gernot.Hoyler@cypress.com>
